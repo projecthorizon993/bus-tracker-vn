@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bus Tracker VN — HCMC &amp; Hanoi</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- Sidebar toggle (mobile) -->
+  <button class="sidebar-toggle" id="sidebarToggle" aria-label="Open menu">☰</button>
+
+  <!-- Map -->
+  <div id="map"></div>
+
+  <div class="map-info" id="mapInfo">Bus Tracker VN</div>
+
+  <!-- Sidebar -->
+  <div class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <h2 id="cityTitle">Ho Chi Minh City</h2>
+      <div class="city-name" id="citySubtitle">Xe buýt theo thời gian thực</div>
+    </div>
+    <div class="sidebar-content">
+      <div class="city-toggle">
+        <button id="cityHCMC" class="active">HCMC</button>
+        <button id="cityHanoi">Hà Nội</button>
+      </div>
+
+      <div class="search-box">
+        <input type="text" id="routeSearch" placeholder="Tìm tuyến xe..." />
+      </div>
+
+      <div class="refresh-bar">
+        <button id="btnRefresh">🔄 Làm mới</button>
+        <span id="lastUpdated" style="font-size:11px;color:#888;flex:1;text-align:right;">--</span>
+      </div>
+
+      <ul class="bus-list" id="busList"></ul>
+    </div>
+  </div>
+
+  <!-- Scripts (load order matters) -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="config.js"></script>
+  <script src="mock-data.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

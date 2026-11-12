@@ -1,0 +1,8 @@
+name = "bus-tracker-vn-worker"
+main = "worker.js"
+compatibility_date = "2026-11-12"
+
+[vars]
+# BUS_API_URL and BUS_API_KEY should be set as secrets:
+#   wrangler secret put BUS_API_URL
+#   wrangler secret put BUS_API_KEY

@@ -1,0 +1,13 @@
+{
+  "name": "bus-tracker-vn",
+  "version": "1.0.0",
+  "description": "Vietnam bus tracking web app (HCMC & Hanoi) with FreeRoute map and Cloudflare Worker",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  }
+}
