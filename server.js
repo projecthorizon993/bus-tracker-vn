@@ -1,8 +1,8 @@
 /**
  * Bus Tracker VN - Local API Server
  * Runs on your Windows machine. Serves the frontend and proxies
- * requests to the real BusMap API (api-embus.busmap.vn) with
- * mock fallback when the Vietnam-restricted domain is unreachable.
+ * requests to the real BusMap API endpoints discovered from APK decompilation,
+ * with mock fallback when APIs are unreachable.
  */
 
 const express = require('express');
@@ -16,6 +16,18 @@ const PORT = process.env.PORT || 3000;
 // ---- Real BusMap API endpoints (discovered from APK decompilation) ----
 const EMBUS_BASE = 'https://api-embus.busmap.vn/client/public';
 const BUSMAP_BASE = 'https://api.busmap.vn/v2/public/busmap';
+
+// ---- Timbus.vn API (accessible from Vietnam, needs session/cookies) ----
+const TIMBUS_BASE = 'http://timbus.vn/Engine/Business/Search/action.ashx';
+const TIMBUS_HEADERS = {
+  'accept': 'application/json, text/javascript, */*; q=0.01',
+  'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+  'x-requested-with': 'XMLHttpRequest',
+  'referer': 'http://timbus.vn/',
+  'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+  'origin': 'http://timbus.vn'
+};
+
 const CITY_ROUTE_IDS = {
   hcmc: [1, 4, 15, 18, 19],
   hanoi: [1, 9, 14, 32, 44]
@@ -203,8 +215,8 @@ const MOCK_DATA = {
 app.use(cors());
 app.use(express.static(path.join(__dirname)));
 
-// ---- Helper: fetch JSON from real BusMap API ----
-async function fetchJson(url, timeoutMs = 8000) {
+// ---- Helper: fetch JSON with timeout ----
+async function fetchJson(url, timeoutMs = 10000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -235,9 +247,72 @@ async function fetchRouteDetail(routeId) {
 }
 
 async function fetchBusList(routeId, direction) {
-  // Try embus API first (Vietnam-internal)
   const url = `${EMBUS_BASE}/bus/list?routeId=${routeId}&direction=${direction}`;
   return fetchJson(url);
+}
+
+// ---- Timbus.vn fetch with session ----
+async function timbusFetch(act, key, fid) {
+  try {
+    // Use Node's http/https for cookie handling without external deps
+    const http = require('http');
+    const https = require('https');
+    const urlModule = require('url');
+
+    return new Promise((resolve) => {
+      let cookies = '';
+
+      // Step 1: GET homepage to establish session
+      const req1 = http.request({
+        hostname: 'timbus.vn',
+        port: 80,
+        path: '/',
+        method: 'GET',
+        headers: { 'user-agent': TIMBUS_HEADERS['user-agent'] },
+        timeout: 10000
+      }, (res1) => {
+        cookies = (res1.headers['set-cookie'] || []).join('; ');
+
+        // Step 2: POST search/fleet request
+        const body = act === 'fleetdetail'
+          ? `act=fleetdetail&fid=${fid}`
+          : `act=searchfull&typ=1&key=${key}`;
+
+        const req2 = http.request({
+          hostname: 'timbus.vn',
+          port: 80,
+          path: '/Engine/Business/Search/action.ashx',
+          method: 'POST',
+          headers: {
+            ...TIMBUS_HEADERS,
+            'cookie': cookies,
+            'content-length': Buffer.byteLength(body)
+          },
+          timeout: 10000
+        }, (res2) => {
+          let data = '';
+          res2.on('data', chunk => data += chunk);
+          res2.on('end', () => {
+            try {
+              resolve(JSON.parse(data));
+            } catch (e) {
+              resolve({ _raw_text: data });
+            }
+          });
+        });
+        req2.on('error', (err) => { resolve(null); });
+        req2.on('timeout', () => { req2.destroy(); resolve(null); });
+        req2.write(body);
+        req2.end();
+      });
+      req1.on('error', (err) => { resolve(null); });
+      req1.on('timeout', () => { req1.destroy(); resolve(null); });
+      req1.end();
+    });
+  } catch (err) {
+    console.warn('timbus fetch error:', err.message);
+    return null;
+  }
 }
 
 // ---- API endpoint: GET /api/buses?city=hcmc|hanoi ----
@@ -248,22 +323,21 @@ app.get('/api/buses', async (req, res) => {
   const routes = [];
   let liveData = false;
 
+  // --- Try BusMap APIs first ---
   for (const routeId of routeIds) {
     try {
-      console.log(`Fetching route ${routeId} for ${city}...`);
+      console.log(`Fetching route ${routeId} for ${city} (BusMap)...`);
 
-      // Fetch route details (start/end stations, color, path)
       const route = await fetchRouteDetail(routeId);
       if (!route) {
-        console.log(`Route ${routeId}: no route data`);
+        console.log(`Route ${routeId}: no BusMap route data`);
         continue;
       }
 
-      // Fetch bus positions for direction 0 (forward)
       const busesRaw = await fetchBusList(routeId, 0) || [];
       liveData = true;
 
-      console.log(`Route ${routeId}: ${busesRaw.length} buses found`);
+      console.log(`Route ${routeId}: ${busesRaw.length} buses found (BusMap)`);
 
       routes.push({
         id: `embus-${routeId}`,
@@ -297,8 +371,42 @@ app.get('/api/buses', async (req, res) => {
     }
   }
 
+  // --- Try timbus.vn if BusMap returned nothing ---
   if (routes.length === 0) {
-    // Fall back to mock data
+    console.log(`Trying timbus.vn for ${city}...`);
+    const timbusResult = await timbusFetch('searchfull', city === 'hcmc' ? '60B' : '01');
+    console.log('timbus.vn result:', JSON.stringify(timbusResult).slice(0, 500));
+
+    if (timbusResult && timbusResult.success && timbusResult.dt) {
+      liveData = true;
+      const data = timbusResult.dt.Data || timbusResult.dt || [];
+      if (Array.isArray(data)) {
+        data.forEach((item, i) => {
+          // Parse "RouteNumber - StartStation - EndStation" from Name field
+          const nameParts = (item.Name || '').split(' - ');
+          const routeNumber = nameParts[0] || `TB${i}`;
+          const startStation = nameParts[1] || '';
+          const endStation = nameParts[2] || '';
+
+          routes.push({
+            id: `timbus-${item.ObjectID || i}`,
+            number: item.FleedCode || routeNumber,
+            name: item.Name || `Tuyến timbus ${i}`,
+            startStation: startStation,
+            endStation: endStation,
+            color: '#1976d2',
+            stops: [
+              { name: startStation, lat: 0, lng: 0, seq: 1 },
+              { name: endStation, lat: 0, lng: 0, seq: 2 }
+            ],
+            buses: [] // timbus.vn searchfull doesn't include real-time positions
+          });
+        });
+      }
+    }
+  }
+
+  if (routes.length === 0) {
     const mock = MOCK_DATA[city] || MOCK_DATA.hcmc;
     console.log(`No live data for ${city}, using mock data`);
     res.json({ ...mock, updatedAt: new Date().toISOString(), source: 'mock' });
@@ -320,8 +428,6 @@ app.get('/api/health', (req, res) => {
 });
 
 // ---- FreeRoute map tile proxy ----
-// Proxies tile requests through local server so FreeRoute API key stays server-side.
-// FreeRoute tile pattern: https://tiles.freeroute.org/{z}/{x}/{y}.png?key=YOUR_KEY
 app.get('/api/map-tiles/:z/:x/:y', async (req, res) => {
   const { z, x, y } = req.params;
   const freerouteKey = process.env.FREEROUTE_API_KEY || 'fro_80bfff714e74d8e8e56588a544113339e40f657011771cb54d4fe32c99010d11';
@@ -335,7 +441,6 @@ app.get('/api/map-tiles/:z/:x/:y', async (req, res) => {
       const tileRes = await fetch(tileUrl, {
         headers: { 'User-Agent': 'BusTrackerVN/1.0' }
       });
-
       if (tileRes.ok) {
         res.set('Content-Type', tileRes.headers.get('content-type') || 'image/png');
         res.set('Cache-Control', 'public, max-age=86400');
@@ -344,11 +449,9 @@ app.get('/api/map-tiles/:z/:x/:y', async (req, res) => {
         return;
       }
     } catch (err) {
-      // Try next URL
       continue;
     }
   }
-
   res.status(502).json({ error: 'Tile proxy failed', message: 'All tile sources unavailable' });
 });
 
