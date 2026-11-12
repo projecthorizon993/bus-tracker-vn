@@ -210,20 +210,26 @@ const CITY_ROUTE_IDS = {
 
 const EMBUS_BASE = 'https://api-embus.busmap.vn/client/public';
 
-async function fetchJson(url, headers = {}) {
-  const res = await fetch(url, { headers });
+// Cloudflare colo codes: SGN = Ho Chi Minh City, HAN = Hanoi
+// Routing outbound fetches through a Vietnam colo may bypass geo-restrictions.
+const COLO_BY_CITY = { hcmc: 'SGN', hanoi: 'HAN' };
+
+async function fetchJson(url, headers = {}, colo) {
+  const init = { headers };
+  if (colo) init.cf = { colo };
+  const res = await fetch(url, init);
   if (!res.ok) return null;
   return res.json();
 }
 
-async function fetchRouteDetail(routeId) {
+async function fetchRouteDetail(routeId, colo) {
   const url = `${EMBUS_BASE}/route/detail?routeId=${routeId}`;
-  return fetchJson(url);
+  return fetchJson(url, {}, colo);
 }
 
-async function fetchBusList(routeId, direction) {
+async function fetchBusList(routeId, direction, colo) {
   const url = `${EMBUS_BASE}/bus/list?routeId=${routeId}&direction=${direction}`;
-  return fetchJson(url);
+  return fetchJson(url, {}, colo);
 }
 
 /**
@@ -233,6 +239,7 @@ async function fetchBusList(routeId, direction) {
 async function fetchRealBusAPI(city, env) {
   const routeIds = CITY_ROUTE_IDS[city] || CITY_ROUTE_IDS.hcmc;
   const apiKey = env.BUS_API_KEY;
+  const colo = COLO_BY_CITY[city];
 
   const headers = { Accept: 'application/json' };
   if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
@@ -242,11 +249,11 @@ async function fetchRealBusAPI(city, env) {
   for (const routeId of routeIds) {
     try {
       // Fetch route details (start/end stations, color, path)
-      const route = await fetchRouteDetail(routeId);
+      const route = await fetchRouteDetail(routeId, colo);
       if (!route) continue;
 
       // Fetch bus positions for direction 0 (forward)
-      const busesRaw = await fetchBusList(routeId, 0) || [];
+      const busesRaw = await fetchBusList(routeId, 0, colo) || [];
 
       routes.push({
         id: `embus-${routeId}`,
