@@ -1,11 +1,6 @@
 /**
- * Bus Tracker VN - Application Logic
- * - FreeRoute map (Leaflet) with your API key
- * - City toggle: HCMC / Hanoi
- * - Bus markers with start/end station popups
- * - Route polylines
- * - Bus list sidebar with search
- * - Auto-refresh from Cloudflare Worker (mock fallback if Worker not set)
+ * Bus Tracker VN - Frontend Logic (GitHub Pages)
+ * Calls Cloudflare Worker API for bus data and map tiles.
  */
 
 (() => {
@@ -35,6 +30,7 @@
     routeSearch: document.getElementById('routeSearch'),
     btnRefresh: document.getElementById('btnRefresh'),
     lastUpdated: document.getElementById('lastUpdated'),
+    dataSource: document.getElementById('dataSource'),
     busList: document.getElementById('busList'),
     mapInfo: document.getElementById('mapInfo')
   };
@@ -75,9 +71,10 @@
       zoomControl: true
     });
 
-    // Tile layer. FreeRoute tile URL goes here when SDK docs are available.
-    // Example: https://tiles.freeroute.org/{z}/{x}/{y}.png?key=FREEROUTE_API_KEY
-    L.tileLayer(CONFIG.TILE_URL, {
+    // Tile URL proxied through Cloudflare Worker
+    const tileUrl = CONFIG.TILE_URL.replace('${WORKER_URL}', CONFIG.WORKER_URL || '');
+
+    L.tileLayer(tileUrl, {
       attribution: CONFIG.TILE_ATTR,
       maxZoom: 19
     }).addTo(state.map);
@@ -108,42 +105,49 @@
     if (!state.data || !state.data.routes) return;
 
     state.data.routes.forEach((route) => {
-      // Route polyline from start station to end station
-      const latlngs = route.stops.map((s) => [s.lat, s.lng]);
-      const polyline = L.polyline(latlngs, {
-        color: route.color,
-        weight: 4,
-        opacity: 0.8,
-        className: 'route-line'
-      }).addTo(state.layerGroup);
-      state.polylines.push(polyline);
+      // Route polyline from stops
+      const latlngs = route.stops.filter(s => s.lat && s.lng).map(s => [s.lat, s.lng]);
+      if (latlngs.length > 1) {
+        const polyline = L.polyline(latlngs, {
+          color: route.color,
+          weight: 4,
+          opacity: 0.8,
+          className: 'route-line'
+        }).addTo(state.layerGroup);
+        state.polylines.push(polyline);
+      }
 
       // Start & end station markers
       const start = route.stops[0];
       const end = route.stops[route.stops.length - 1];
 
-      L.marker([start.lat, start.lng], {
-        title: `Đầu: ${start.name}`,
-        icon: L.divIcon({
-          className: 'custom-div-icon',
-          html: `<div style="background:${route.color};color:#fff;border-radius:50%;width:14px;height:14px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:bold;border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,0.4);">${start.name.charAt(0)}</div>`,
-          iconSize: [14, 14],
-          iconAnchor: [7, 7]
-        })
-      }).addTo(state.layerGroup);
+      if (start && start.lat && start.lng) {
+        L.marker([start.lat, start.lng], {
+          title: `Đầu: ${start.name}`,
+          icon: L.divIcon({
+            className: 'custom-div-icon',
+            html: `<div style="background:${route.color};color:#fff;border-radius:50%;width:14px;height:14px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:bold;border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,0.4);">${start.name.charAt(0)}</div>`,
+            iconSize: [14, 14],
+            iconAnchor: [7, 7]
+          })
+        }).addTo(state.layerGroup);
+      }
 
-      L.marker([end.lat, end.lng], {
-        title: `Cuối: ${end.name}`,
-        icon: L.divIcon({
-          className: 'custom-div-icon',
-          html: `<div style="background:${route.color};color:#fff;border-radius:50%;width:14px;height:14px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:bold;border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,0.4);">${end.name.charAt(0)}</div>`,
-          iconSize: [14, 14],
-          iconAnchor: [7, 7]
-        })
-      }).addTo(state.layerGroup);
+      if (end && end.lat && end.lng) {
+        L.marker([end.lat, end.lng], {
+          title: `Cuối: ${end.name}`,
+          icon: L.divIcon({
+            className: 'custom-div-icon',
+            html: `<div style="background:${route.color};color:#fff;border-radius:50%;width:14px;height:14px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:bold;border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,0.4);">${end.name.charAt(0)}</div>`,
+            iconSize: [14, 14],
+            iconAnchor: [7, 7]
+          })
+        }).addTo(state.layerGroup);
+      }
 
       // Bus markers
       (route.buses || []).forEach((bus) => {
+        if (!bus.lat || !bus.lng) return;
         const marker = L.marker([bus.lat, bus.lng], {
           title: `Xe ${bus.id}`,
           icon: L.divIcon({
@@ -173,40 +177,40 @@
 
   // ---------- Data ----------
   async function loadData() {
-    let data = null;
-    const workerUrl = CONFIG.WORKER_URL;
-
-    if (workerUrl) {
-      try {
-        const res = await fetch(`${workerUrl}/api/buses?city=${state.city}`, {
-          headers: { Accept: 'application/json' }
-        });
-        if (res.ok) {
-          data = await res.json();
-        } else {
-          throw new Error(`Worker returned ${res.status}`);
-        }
-      } catch (err) {
-        console.warn('Worker fetch failed, using mock data:', err);
-        data = getMockData(state.city);
-      }
-    } else {
-      data = getMockData(state.city);
+    if (!CONFIG.WORKER_URL) {
+      els.dataSource.textContent = '⚠️ Chưa cấu hình Worker URL';
+      els.dataSource.style.color = '#e91e63';
+      els.busList.innerHTML = '<li class="empty-state">Vui lòng cấu hình WORKER_URL trong config.js</li>';
+      return;
     }
 
-    state.data = data;
+    try {
+      const res = await fetch(`${CONFIG.WORKER_URL}/api/buses?city=${state.city}`, {
+        headers: { Accept: 'application/json' }
+      });
+      if (!res.ok) throw new Error(`Worker returned ${res.status}`);
+      state.data = await res.json();
+    } catch (err) {
+      console.warn('Worker fetch failed:', err);
+      els.dataSource.textContent = '⚠️ Lỗi kết nối Worker';
+      els.dataSource.style.color = '#e91e63';
+      return;
+    }
+
     state.data.updatedAt = new Date().toISOString();
+    els.dataSource.textContent = state.data.source === 'live' ? '🟢 Live (timbus.vn)' : '🟡 Mock';
+    els.dataSource.style.color = state.data.source === 'live' ? '#4caf50' : '#ff9800';
+    els.lastUpdated.textContent = `Cập nhật: ${new Date().toLocaleTimeString('vi-VN')}`;
+
     renderMap();
     renderList(els.routeSearch.value);
-    els.lastUpdated.textContent = `Cập nhật: ${new Date().toLocaleTimeString('vi-VN')}`;
-    return data;
   }
 
   function loadCity(city) {
     state.city = city;
     const cfg = CONFIG.CITIES[city];
     els.cityTitle.textContent = cfg.name;
-    els.citySubtitle.textContent = city === 'hcmc' ? 'Xe buýt theo thời gian thực' : 'Xe buýt theo thời gian thực';
+    els.citySubtitle.textContent = 'Dữ liệu trực tiếp từ timbus.vn';
     els.cityHCMC.classList.toggle('active', city === 'hcmc');
     els.cityHanoi.classList.toggle('active', city === 'hanoi');
 
@@ -247,7 +251,6 @@
       const li = document.createElement('li');
       li.className = 'route-item';
       const bus = (route.buses && route.buses[0]) || {};
-      const isExpanded = false;
 
       li.innerHTML = `
         <div class="route-header" onclick="this.parentElement.querySelector('.route-body').classList.toggle('show')">
@@ -268,11 +271,12 @@
               <div class="bus-id">Xe ${bus.id || '—'}</div>
               <div class="bus-eta">Tiếp theo: ${bus.nextStop || '—'} · ${bus.eta || '—'}</div>
             </div>
-            <div class="bus-status">Đang chạy</div>
+            <div class="bus-status">${bus.eta ? 'Đang chạy' : 'Lên lịch'}</div>
           </div>
-          <div style="margin-top:6px; font-size:11px; color:#666;">
-            ${route.stops.map((s) => s.name).join(' → ')}
-          </div>
+          ${route.stops && route.stops.length > 0
+            ? `<div style="margin-top:6px; font-size:11px; color:#666;">${route.stops.map(s => s.name).join(' → ')}</div>`
+            : ''
+          }
         </div>
       `;
       els.busList.appendChild(li);

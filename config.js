@@ -1,19 +1,16 @@
 /**
- * Bus Tracker VN - Configuration
- * Fill in your FreeRoute API key and Cloudflare Worker URL below.
+ * Bus Tracker VN - Config (GitHub Pages + Cloudflare Worker)
+ * Your Worker URL goes here after deploying to Cloudflare.
  */
 const CONFIG = {
-  // Your FreeRoute API key (from https://freeroute.org/)
-  FREEROUTE_API_KEY: 'fro_80bfff714e74d8e8e56588a544113339e40f657011771cb54d4fe32c99010d11',
-
   // Cloudflare Worker URL (deploy worker.js, then paste the workers.dev domain here)
-  WORKER_URL: 'http://localhost:3000',
+  WORKER_URL: '',
 
   // Default city: 'hcmc' or 'hanoi'
   DEFAULT_CITY: 'hcmc',
 
-  // Auto-refresh interval in milliseconds for live bus positions
-  REFRESH_INTERVAL: 10000,
+  // Auto-refresh interval in milliseconds
+  REFRESH_INTERVAL: 30000,
 
   // Map centers
   CITIES: {
@@ -21,7 +18,7 @@ const CONFIG = {
     hanoi: { name: 'Hanoi', center: [21.0285, 105.8542], zoom: 13 }
   },
 
-  // Leaflet tile layer. Proxied through local server at /api/map-tiles/{z}/{x}/{y}
-  TILE_URL: 'http://localhost:3000/api/map-tiles/{z}/{x}/{y}',
-  TILE_ATTR: '&copy; FreeRoute'
+  // Map tile URL proxied through Cloudflare Worker
+  TILE_URL: '${WORKER_URL}/api/map-tiles/{z}/{x}/{y}',
+  TILE_ATTR: '&copy; FreeRoute / OpenStreetMap'
 };

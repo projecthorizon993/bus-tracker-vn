@@ -15,13 +15,13 @@
   <!-- Map -->
   <div id="map"></div>
 
-  <div class="map-info" id="mapInfo">Bus Tracker VN</div>
+  <div class="map-info" id="mapInfo">Bus Tracker VN — Dữ liệu từ timbus.vn</div>
 
   <!-- Sidebar -->
   <div class="sidebar" id="sidebar">
     <div class="sidebar-header">
       <h2 id="cityTitle">Ho Chi Minh City</h2>
-      <div class="city-name" id="citySubtitle">Xe buýt theo thời gian thực</div>
+      <div class="city-name" id="citySubtitle">Dữ liệu trực tiếp từ timbus.vn</div>
     </div>
     <div class="sidebar-content">
       <div class="city-toggle">
@@ -36,16 +36,16 @@
       <div class="refresh-bar">
         <button id="btnRefresh">🔄 Làm mới</button>
         <span id="lastUpdated" style="font-size:11px;color:#888;flex:1;text-align:right;">--</span>
+        <span id="dataSource" style="font-size:11px;color:#4caf50;flex:1;text-align:right;">🔴 Offline</span>
       </div>
 
       <ul class="bus-list" id="busList"></ul>
     </div>
   </div>
 
-  <!-- Scripts (load order matters) -->
+  <!-- Scripts -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="config.js"></script>
-  <script src="mock-data.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

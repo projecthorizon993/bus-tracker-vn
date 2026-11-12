@@ -1,372 +1,284 @@
 /**
  * Bus Tracker VN - Cloudflare Worker
- * Secure proxy for BusMap API data (reverse-engineered from BusMap APK).
- * Hides API keys, handles CORS, and falls back to mock data when the real
- * API is unreachable (api-embus.busmap.vn is geo-restricted to Vietnam).
- *
- * Real API endpoints found in decompiled BusMap APK (com.t7.busmaphn 3.1.2):
- *   GET https://api-embus.busmap.vn/client/public/route/detail?routeId=X
- *   GET https://api-embus.busmap.vn/client/public/bus/list?routeId=X&direction=Y
- *   GET https://api-embus.busmap.vn/client/public/bus/list_all
+ * Backend proxy for timbus.vn bus data and FreeRoute map tiles.
+ * Hides API keys server-side, handles CORS, manages timbus.vn session cookies.
  */
 
-const MOCK_DATA = {
-  hcmc: {
-    city: 'hcmc',
-    cityName: 'Ho Chi Minh City',
-    updatedAt: new Date().toISOString(),
-    routes: [
-      {
-        id: 'hcmc-01',
-        number: '01',
-        name: 'Bến Thành – Chợ Lớn',
-        startStation: 'Bến Thành',
-        endStation: 'Chợ Lớn',
-        color: '#1976d2',
-        stops: [
-          { name: 'Bến Thành', lat: 10.7775, lng: 106.6831, seq: 1 },
-          { name: 'Điện Biên Phủ', lat: 10.7800, lng: 106.6800, seq: 2 },
-          { name: 'Nguyễn Huệ', lat: 10.7780, lng: 106.7000, seq: 3 },
-          { name: 'Chợ Lớn', lat: 10.7500, lng: 106.6700, seq: 4 }
-        ],
-        buses: [
-          { id: 'hcmc-01-a', routeId: 'hcmc-01', lat: 10.7720, lng: 106.6780, heading: 90, nextStop: 'Nguyễn Huệ', eta: '3 phút', updatedAt: new Date().toISOString() }
-        ]
-      },
-      {
-        id: 'hcmc-04',
-        number: '04',
-        name: 'Bến Xe Miền Đông – Chợ Lớn',
-        startStation: 'Bến Xe Miền Đông',
-        endStation: 'Chợ Lớn',
-        color: '#4caf50',
-        stops: [
-          { name: 'Bến Xe Miền Đông', lat: 10.8100, lng: 106.7100, seq: 1 },
-          { name: 'Điện Biên Phủ', lat: 10.7900, lng: 106.6900, seq: 2 },
-          { name: 'Chợ Lớn', lat: 10.7500, lng: 106.6700, seq: 3 }
-        ],
-        buses: [
-          { id: 'hcmc-04-a', routeId: 'hcmc-04', lat: 10.7950, lng: 106.6950, heading: 180, nextStop: 'Chợ Lớn', eta: '7 phút', updatedAt: new Date().toISOString() }
-        ]
-      },
-      {
-        id: 'hcmc-15',
-        number: '15',
-        name: 'Bến Thành – Chợ Rùng',
-        startStation: 'Bến Thành',
-        endStation: 'Chợ Rùng',
-        color: '#ff9800',
-        stops: [
-          { name: 'Bến Thành', lat: 10.7775, lng: 106.6831, seq: 1 },
-          { name: 'Nguyễn Huệ', lat: 10.7780, lng: 106.7000, seq: 2 },
-          { name: 'Chợ Rùng', lat: 10.7300, lng: 106.7200, seq: 3 }
-        ],
-        buses: [
-          { id: 'hcmc-15-a', routeId: 'hcmc-15', lat: 10.7600, lng: 106.6900, heading: 45, nextStop: 'Chợ Rùng', eta: '12 phút', updatedAt: new Date().toISOString() }
-        ]
-      },
-      {
-        id: 'hcmc-18',
-        number: '18',
-        name: 'Chợ Lớn – Bến Xe Miền Tây',
-        startStation: 'Chợ Lớn',
-        endStation: 'Bến Xe Miền Tây',
-        color: '#e91e63',
-        stops: [
-          { name: 'Chợ Lớn', lat: 10.7500, lng: 106.6700, seq: 1 },
-          { name: 'Nguyễn Trọng Trí', lat: 10.7400, lng: 106.6600, seq: 2 },
-          { name: 'Bến Xe Miền Tây', lat: 10.7600, lng: 106.6200, seq: 3 }
-        ],
-        buses: [
-          { id: 'hcmc-18-a', routeId: 'hcmc-18', lat: 10.7450, lng: 106.6550, heading: 270, nextStop: 'Bến Xe Miền Tây', eta: '5 phút', updatedAt: new Date().toISOString() }
-        ]
-      },
-      {
-        id: 'hcmc-19',
-        number: '19',
-        name: 'Chợ Lớn – Bến Thành',
-        startStation: 'Chợ Lớn',
-        endStation: 'Bến Thành',
-        color: '#9c27b0',
-        stops: [
-          { name: 'Chợ Lớn', lat: 10.7500, lng: 106.6700, seq: 1 },
-          { name: 'Điện Biên Phủ', lat: 10.7800, lng: 106.6800, seq: 2 },
-          { name: 'Bến Thành', lat: 10.7775, lng: 106.6831, seq: 3 }
-        ],
-        buses: [
-          { id: 'hcmc-19-a', routeId: 'hcmc-19', lat: 10.7650, lng: 106.6750, heading: 0, nextStop: 'Điện Biên Phủ', eta: '4 phút', updatedAt: new Date().toISOString() }
-        ]
-      }
-    ]
-  },
-  hanoi: {
-    city: 'hanoi',
-    cityName: 'Hanoi',
-    updatedAt: new Date().toISOString(),
-    routes: [
-      {
-        id: 'hn-01',
-        number: '01',
-        name: 'Yên Nghĩa – Long Biên',
-        startStation: 'Yên Nghĩa',
-        endStation: 'Long Biên',
-        color: '#1976d2',
-        stops: [
-          { name: 'Yên Nghĩa', lat: 20.9500, lng: 105.7800, seq: 1 },
-          { name: 'Cầu Giấy', lat: 21.0200, lng: 105.7900, seq: 2 },
-          { name: 'Long Biên', lat: 21.0400, lng: 105.8500, seq: 3 }
-        ],
-        buses: [
-          { id: 'hn-01-a', routeId: 'hn-01', lat: 21.0100, lng: 105.8100, heading: 90, nextStop: 'Long Biên', eta: '6 phút', updatedAt: new Date().toISOString() }
-        ]
-      },
-      {
-        id: 'hn-09',
-        number: '09',
-        name: 'Long Biên – Yên Nghĩa',
-        startStation: 'Long Biên',
-        endStation: 'Yên Nghĩa',
-        color: '#4caf50',
-        stops: [
-          { name: 'Long Biên', lat: 21.0400, lng: 105.8500, seq: 1 },
-          { name: 'Bát Tràng', lat: 21.0300, lng: 105.8300, seq: 2 },
-          { name: 'Yên Nghĩa', lat: 20.9500, lng: 105.7800, seq: 3 }
-        ],
-        buses: [
-          { id: 'hn-09-a', routeId: 'hn-09', lat: 21.0300, lng: 105.8400, heading: 180, nextStop: 'Bát Tràng', eta: '8 phút', updatedAt: new Date().toISOString() }
-        ]
-      },
-      {
-        id: 'hn-14',
-        number: '14',
-        name: 'Cầu Giấy – Bát Tràng',
-        startStation: 'Cầu Giấy',
-        endStation: 'Bát Tràng',
-        color: '#ff9800',
-        stops: [
-          { name: 'Cầu Giấy', lat: 21.0200, lng: 105.7900, seq: 1 },
-          { name: 'Long Biên', lat: 21.0400, lng: 105.8500, seq: 2 },
-          { name: 'Bát Tràng', lat: 21.0300, lng: 105.8300, seq: 3 }
-        ],
-        buses: [
-          { id: 'hn-14-a', routeId: 'hn-14', lat: 21.0250, lng: 105.8000, heading: 45, nextStop: 'Long Biên', eta: '10 phút', updatedAt: new Date().toISOString() }
-        ]
-      },
-      {
-        id: 'hn-32',
-        number: '32',
-        name: 'Yên Nghĩa – Bạch Mai',
-        startStation: 'Yên Nghĩa',
-        endStation: 'Bạch Mai',
-        color: '#e91e63',
-        stops: [
-          { name: 'Yên Nghĩa', lat: 20.9500, lng: 105.7800, seq: 1 },
-          { name: 'Cầu Giấy', lat: 21.0200, lng: 105.7900, seq: 2 },
-          { name: 'Bạch Mai', lat: 21.0000, lng: 105.8300, seq: 3 }
-        ],
-        buses: [
-          { id: 'hn-32-a', routeId: 'hn-32', lat: 20.9800, lng: 105.8000, heading: 270, nextStop: 'Bạch Mai', eta: '5 phút', updatedAt: new Date().toISOString() }
-        ]
-      },
-      {
-        id: 'hn-44',
-        number: '44',
-        name: 'Cầu Giấy – Long Biên',
-        startStation: 'Cầu Giấy',
-        endStation: 'Long Biên',
-        color: '#9c27b0',
-        stops: [
-          { name: 'Cầu Giấy', lat: 21.0200, lng: 105.7900, seq: 1 },
-          { name: 'Long Biên', lat: 21.0400, lng: 105.8500, seq: 2 }
-        ],
-        buses: [
-          { id: 'hn-44-a', routeId: 'hn-44', lat: 21.0300, lng: 105.8200, heading: 0, nextStop: 'Long Biên', eta: '3 phút', updatedAt: new Date().toISOString() }
-        ]
-      }
-    ]
-  }
+// ---- Config ----
+const FREEROUTE_API_KEY = 'fro_80bfff714e74d8e8e56588a544113339e40f657011771cb54d4fe32c99010d11';
+
+const TIMBUS_HEADERS = {
+  'accept': 'application/json, text/javascript, */*; q=0.01',
+  'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+  'x-requested-with': 'XMLHttpRequest',
+  'referer': 'http://timbus.vn/',
+  'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+  'origin': 'http://timbus.vn'
 };
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Accept',
-  'Content-Type': 'application/json'
+  'Access-Control-Allow-Headers': 'Content-Type, Accept'
 };
 
-function json(data, status = 200, headers = {}) {
+// ---- Helpers ----
+function json(data, status = 200, extra = {}) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { ...CORS_HEADERS, ...headers }
+    headers: { ...CORS_HEADERS, 'Content-Type': 'application/json', ...extra }
   });
 }
 
-// Known route IDs for each city (from BusMap app data). Used to query the real API.
-// These are example route numbers; the app fetches routes per-region.
-const CITY_ROUTE_IDS = {
-  hcmc: [1, 4, 15, 18, 19],
-  hanoi: [1, 9, 14, 32, 44]
-};
-
-const EMBUS_BASE = 'https://api-embus.busmap.vn/client/public';
-
-// Cloudflare colo codes: SGN = Ho Chi Minh City, HAN = Hanoi
-// Routing outbound fetches through a Vietnam colo may bypass geo-restrictions.
-const COLO_BY_CITY = { hcmc: 'SGN', hanoi: 'HAN' };
-
-async function fetchJson(url, headers = {}, colo) {
-  const init = { headers };
-  if (colo) init.cf = { colo };
-  const res = await fetch(url, init);
-  if (!res.ok) return null;
-  return res.json();
-}
-
-async function fetchRouteDetail(routeId, colo) {
-  const url = `${EMBUS_BASE}/route/detail?routeId=${routeId}`;
-  return fetchJson(url, {}, colo);
-}
-
-async function fetchBusList(routeId, direction, colo) {
-  const url = `${EMBUS_BASE}/bus/list?routeId=${routeId}&direction=${direction}`;
-  return fetchJson(url, {}, colo);
-}
-
-/**
- * Fetch live bus data from the real BusMap API (api-embus.busmap.vn).
- * Returns null if unreachable (geo-restricted to Vietnam) so mock fallback is used.
- */
-async function fetchRealBusAPI(city, env) {
-  const routeIds = CITY_ROUTE_IDS[city] || CITY_ROUTE_IDS.hcmc;
-  const apiKey = env.BUS_API_KEY;
-  const colo = COLO_BY_CITY[city];
-
-  const headers = { Accept: 'application/json' };
-  if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
-
-  const routes = [];
-
-  for (const routeId of routeIds) {
+async function fetchWithRetry(url, init, retries = 2) {
+  for (let i = 0; i < retries; i++) {
     try {
-      // Fetch route details (start/end stations, color, path)
-      const route = await fetchRouteDetail(routeId, colo);
-      if (!route) continue;
-
-      // Fetch bus positions for direction 0 (forward)
-      const busesRaw = await fetchBusList(routeId, 0, colo) || [];
-
-      routes.push({
-        id: `embus-${routeId}`,
-        number: route.routeNo || String(routeId),
-        name: (route.routeName && route.routeName[0]) || `Tuyến ${routeId}`,
-        startStation: route.firstStation || '',
-        endStation: route.lastStation || '',
-        color: route.color || '#1976d2',
-        stops: (route.routePaths || []).map((p, i) => ({
-          name: p.stationName || `Điểm ${i + 1}`,
-          lat: p.lat || 0,
-          lng: p.lng || 0,
-          seq: p.seq || i + 1
-        })),
-        buses: (busesRaw || []).map((b) => ({
-          id: b.busId || b.vehicleNumber || `bus-${b.id}`,
-          routeId: String(route.routeId || routeId),
-          lat: b.lat || 0,
-          lng: b.lng || 0,
-          heading: b.deg || 0,
-          nextStop: b.info || '',
-          eta: b.status || '',
-          updatedAt: new Date(b.time * 1000).toISOString() || new Date().toISOString(),
-          vehicleNumber: b.vehicleNumber || '',
-          speed: b.speed || 0
-        }))
-      });
-    } catch (err) {
-      console.warn(`Route ${routeId} failed:`, err);
-      continue;
+      const res = await fetch(url, init);
+      if (res.ok) return res;
+    } catch (e) {
+      // retry
     }
+    await new Promise(r => setTimeout(r, 500));
   }
-
-  if (routes.length === 0) return null;
-
-  return {
-    city,
-    cityName: city === 'hcmc' ? 'Ho Chi Minh City' : 'Hanoi',
-    updatedAt: new Date().toISOString(),
-    routes
-  };
+  return null;
 }
 
 /**
- * Normalize real BusMap API response into the common app shape.
- * Used when the Worker is called directly with pre-fetched data.
+ * timbus.vn session fetch: GET homepage first to get ASP.NET_SessionId cookie,
+ * then POST to action.ashx with the cookie.
  */
-function normalizeResponse(raw, city) {
+async function timbusFetch(act, keyOrFid, isFleet = false) {
+  const cookieJar = {};
+
+  // Step 1: GET homepage to establish session cookie
+  const homeRes = await fetch('http://timbus.vn/', {
+    headers: { 'user-agent': TIMBUS_HEADERS['user-agent'] },
+    redirect: 'follow'
+  });
+  const setCookie = homeRes.headers.get('set-cookie') || '';
+  const sessionMatch = setCookie.match(/ASP.NET_SessionId=([^;]+)/);
+  if (sessionMatch) cookieJar['ASP.NET_SessionId'] = sessionMatch[1];
+
+  // Step 2: POST to action.ashx
+  const body = isFleet
+    ? `act=fleetdetail&fid=${keyOrFid}`
+    : `act=searchfull&typ=1&key=${keyOrFid}`;
+
+  const postRes = await fetch('http://timbus.vn/Engine/Business/Search/action.ashx', {
+    method: 'POST',
+    headers: {
+      ...TIMBUS_HEADERS,
+      'cookie': Object.entries(cookieJar).map(([k, v]) => `${k}=${v}`).join('; '),
+      'content-length': String(body.length)
+    },
+    body
+  });
+
+  if (!postRes.ok) return null;
+  const text = await postRes.text();
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    return { _raw_text: text };
+  }
+}
+
+/** Parse "RouteNumber - StartStation - EndStation" from timbus.vn Name field */
+function parseRouteName(name) {
+  const parts = (name || '').split(' - ');
   return {
-    city,
-    cityName: city === 'hcmc' ? 'Ho Chi Minh City' : 'Hanoi',
-    updatedAt: new Date().toISOString(),
-    routes: (raw.routes || []).map((r) => ({
-      id: r.id || String(r.routeId || r.routeNo || ''),
-      number: r.routeNo || r.number || '',
-      name: (r.routeName && r.routeName[0]) || r.name || '',
-      startStation: r.firstStation || r.startStation || '',
-      endStation: r.lastStation || r.endStation || '',
-      color: r.color || '#1976d2',
-      stops: (r.routePaths || r.stops || []).map((s, i) => ({
-        name: s.stationName || s.name || `Điểm ${i + 1}`,
-        lat: s.lat || s.latitude || 0,
-        lng: s.lng || s.longitude || 0,
-        seq: s.seq || i + 1
-      })),
-      buses: (r.buses || []).map((b) => ({
-        id: b.busId || b.vehicleId || b.vehicleNumber || '',
-        routeId: String(b.routeId || r.routeId || r.routeNo || ''),
-        lat: b.lat || b.latitude || 0,
-        lng: b.lng || b.longitude || 0,
-        heading: b.deg || b.heading || 0,
-        nextStop: b.info || b.nextStop || '',
-        eta: b.status || b.eta || '',
-        updatedAt: b.time ? new Date(b.time * 1000).toISOString() : (b.updatedAt || new Date().toISOString()),
-        vehicleNumber: b.vehicleNumber || '',
-        speed: b.speed || 0
-      }))
-    }))
+    number: parts[0] || '',
+    startStation: parts[1] || '',
+    endStation: parts[2] || ''
   };
 }
 
+/** Convert timbus.vn Geo array (Lat,Lng) to route stops */
+function geoToStops(geo) {
+  if (!geo || !Array.isArray(geo)) return [];
+  return geo.map((p, i) => ({
+    name: `Điểm ${i + 1}`,
+    lat: p.Lat || 0,
+    lng: p.Lng || 0,
+    seq: i + 1
+  }));
+}
+
+// ---- Worker ----
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    // Handle CORS preflight
+    // CORS preflight
     if (request.method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: CORS_HEADERS });
     }
 
-    // Only GET /api/buses?city=...
     if (request.method !== 'GET') {
       return json({ error: 'Method not allowed' }, 405);
     }
 
     const path = url.pathname;
-    if (path !== '/api/buses' && path !== '/api/buses/') {
-      return json({ error: 'Not found' }, 404);
+
+    // ---- Health ----
+    if (path === '/api/health' || path === '/api/health/') {
+      return json({ status: 'ok', service: 'bus-tracker-vn-worker', time: new Date().toISOString() });
     }
 
-    const city = url.searchParams.get('city') || 'hcmc';
+    // ---- Bus data: /api/buses?city=hcmc|hanoi ----
+    if (path === '/api/buses' || path === '/api/buses/') {
+      const city = (url.searchParams.get('city') || 'hcmc').toLowerCase();
+      const searchKey = city === 'hcmc' ? '60B' : '01';
 
-    // Try real API first, fall back to mock
-    let data = await fetchRealBusAPI(city, env);
-    if (!data) {
-      const mock = MOCK_DATA[city] || MOCK_DATA.hcmc;
-      data = {
-        ...mock,
-        updatedAt: new Date().toISOString()
-      };
+      const timbus = await timbusFetch('searchfull', searchKey, false);
+      const routes = [];
+
+      if (timbus && timbus.success && timbus.dt && Array.isArray(timbus.dt.Data)) {
+        for (const item of timbus.dt.Data) {
+          const parsed = parseRouteName(item.Name);
+          const fleet = await timbusFetch('fleetdetail', item.ObjectID, true);
+          let stops = [];
+          let buses = [];
+
+          if (fleet && fleet.success && fleet.dt) {
+            const fd = fleet.dt;
+            stops = geoToStops(fd.Go?.Geo || []);
+            // Use station list if available
+            if (fd.Station && Array.isArray(fd.Station)) {
+              stops = fd.Station.map((s, i) => ({
+                name: s.Name || `Điểm ${i + 1}`,
+                lat: s.Geo?.Lat || 0,
+                lng: s.Geo?.Lng || 0,
+                seq: s.Geo ? i + 1 : i + 1
+              }));
+            }
+            // buses: timbus.vn searchfull doesn't include real-time positions,
+            // but fleetdetail has route geometry. We'll mark as scheduled.
+            buses = [{
+              id: `timbus-${item.ObjectID}`,
+              routeId: item.FleedCode || item.ObjectID,
+              lat: stops[0]?.lat || 0,
+              lng: stops[0]?.lng || 0,
+              heading: 0,
+              nextStop: stops[1]?.name || '',
+              eta: 'Lên lịch',
+              updatedAt: new Date().toISOString(),
+              vehicleNumber: '',
+              speed: 0
+            }];
+          }
+
+          routes.push({
+            id: `timbus-${item.ObjectID}`,
+            number: item.FleedCode || parsed.number,
+            name: item.Name || `Tuyến timbus ${item.ObjectID}`,
+            startStation: parsed.startStation,
+            endStation: parsed.endStation,
+            color: '#1976d2',
+            stops,
+            buses
+          });
+        }
+      }
+
+      if (routes.length === 0) {
+        return json({
+          city,
+          cityName: city === 'hcmc' ? 'Ho Chi Minh City' : 'Hanoi',
+          updatedAt: new Date().toISOString(),
+          routes: [],
+          source: 'mock',
+          error: 'No data from timbus.vn'
+        });
+      }
+
+      return json({
+        city,
+        cityName: city === 'hcmc' ? 'Ho Chi Minh City' : 'Hanoi',
+        updatedAt: new Date().toISOString(),
+        routes,
+        source: 'live'
+      });
     }
 
-    // Cache briefly (30s) via Cloudflare cache API if available
-    return json(data, 200, { 'Cache-Control': 'public, max-age=30' });
+    // ---- Route detail: /api/route/:id ----
+    if (path.startsWith('/api/route/')) {
+      const id = path.split('/').pop();
+      const fleet = await timbusFetch('fleetdetail', id, true);
+
+      if (!fleet || !fleet.success || !fleet.dt) {
+        return json({ error: 'Route not found' }, 404);
+      }
+
+      const fd = fleet.dt;
+      const parsed = parseRouteName(fd.Name);
+
+      return json({
+        id: fd.FleetID || id,
+        number: fd.Code || parsed.number,
+        name: fd.Name || `Tuyến ${id}`,
+        startStation: fd.FirstStation || parsed.startStation,
+        endStation: fd.LastStation || parsed.endStation,
+        color: '#1976d2',
+        routeNo: fd.Code,
+        operationTime: fd.OperationsTime,
+        frequency: fd.Frequency,
+        cost: fd.Cost,
+        enterprise: fd.Enterprise,
+        busCount: fd.BusCount,
+        stops: geoToStops(fd.Go?.Geo || []),
+        stations: (fd.Station || []).map((s, i) => ({
+          id: s.ObjectID,
+          code: s.Code,
+          name: s.Name,
+          lat: s.Geo?.Lat || 0,
+          lng: s.Geo?.Lng || 0,
+          seq: i + 1
+        })),
+        routes: {
+          go: geoToStops(fd.Go?.Geo || []),
+          back: geoToStops(fd.Re?.Geo || [])
+        },
+        updatedAt: new Date().toISOString(),
+        source: 'live'
+      });
+    }
+
+    // ---- Map tile proxy: /api/map-tiles/:z/:x/:y ----
+    if (path.startsWith('/api/map-tiles/')) {
+      const parts = path.split('/');
+      const z = parts[3];
+      const x = parts[4];
+      const y = parts[5].replace('.png', '');
+
+      const tileUrls = [
+        `https://tiles.freeroute.org/${z}/${x}/${y}.png?key=${FREEROUTE_API_KEY}`,
+        `https://tile.openstreetmap.org/${z}/${x}/${y}.png`
+      ];
+
+      for (const tileUrl of tileUrls) {
+        try {
+          const tileRes = await fetch(tileUrl, {
+            headers: { 'User-Agent': 'BusTrackerVN/1.0' }
+          });
+          if (tileRes.ok) {
+            return new Response(tileRes.body, {
+              status: 200,
+              headers: {
+                'Content-Type': tileRes.headers.get('content-type') || 'image/png',
+                'Cache-Control': 'public, max-age=86400',
+                'Access-Control-Allow-Origin': '*'
+              }
+            });
+          }
+        } catch (e) {
+          continue;
+        }
+      }
+
+      return json({ error: 'Tile unavailable' }, 502);
+    }
+
+    return json({ error: 'Not found' }, 404);
   }
 };

@@ -1,17 +1,12 @@
 {
-  "name": "bus-tracker-vn-local",
+  "name": "bus-tracker-vn",
   "version": "1.0.0",
-  "description": "Local API server for Bus Tracker VN (HCMC + Hanoi) with FreeRoute map tile proxy",
-  "main": "server.js",
+  "description": "Vietnam bus tracker - GitHub Pages frontend + Cloudflare Worker backend",
+  "private": true,
   "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js"
+    "deploy:worker": "wrangler deploy"
   },
-  "dependencies": {
-    "cors": "^2.8.5",
-    "express": "^4.18.2",
-    "fetch-cookie": "^3.2.0",
-    "node-fetch": "^2.6.7",
-    "tough-cookie": "^6.1.0"
+  "devDependencies": {
+    "wrangler": "^3.0.0"
   }
 }

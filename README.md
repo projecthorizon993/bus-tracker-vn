@@ -1,25 +1,25 @@
 # Bus Tracker VN
 
-Web app to track buses in **Ho Chi Minh City** and **Hanoi**, Vietnam, using the **FreeRoute** map SDK and a **Cloudflare Worker** for secure data fetching.
+Web app to track buses in **Ho Chi Minh City** and **Hanoi**, Vietnam, using **timbus.vn** for live bus data and **FreeRoute** for map tiles.
 
-## Features
-- FreeRoute-powered map (HCMC & Hanoi)
-- Live bus markers with route number
-- **Start station → End station** for every route
-- Colored route polylines
-- Bus list sidebar with search & filter
-- Auto-refresh (10s) via Cloudflare Worker
-- Mobile-responsive sidebar
+## Architecture
+
+```
+GitHub Pages (Frontend) ──→ Cloudflare Worker (Backend) ──→ timbus.vn + FreeRoute
+                                │                              │
+                                └─ Hides API keys              └─ Real bus data
+                                └─ Handles CORS                └─ Map tiles
+```
 
 ## Project structure
+
 ```
 bus-tracker-vn/
-├── index.html        # Frontend UI
+├── index.html        # Frontend UI (GitHub Pages)
 ├── style.css         # Styles
-├── config.js         # FreeRoute API key + Worker URL
-├── app.js            # Map, markers, list, refresh logic
-├── mock-data.js      # Demo HCMC + Hanoi data (start/end stations)
-├── worker.js         # Cloudflare Worker (secure data proxy)
+├── app.js            # Frontend logic, calls Worker API
+├── config.js         # Worker URL config
+├── worker.js         # Cloudflare Worker (backend proxy)
 ├── wrangler.toml     # Worker deployment config
 ├── package.json
 └── README.md
@@ -27,50 +27,79 @@ bus-tracker-vn/
 
 ## Setup
 
-### 1. FreeRoute API key
-Edit `config.js` — your key is already filled in:
-```
-FREEROUTE_API_KEY: 'fro_80bfff714e74d8e8e56588a544113339e40f657011771cb54d4fe32c99010d11',
-```
+### 1. Deploy Cloudflare Worker
 
-### 2. Run locally
-Open `index.html` in a browser. It uses mock data by default (Worker URL empty).
-
-### 3. Deploy Cloudflare Worker
 ```bash
 # Install wrangler
 npm install -g wrangler
 
-# Login
+# Login to Cloudflare
 wrangler login
 
-# Set secrets (when you have a real bus API)
-wrangler secret put BUS_API_URL
-wrangler secret put BUS_API_KEY
-
-# Deploy
+# Deploy the Worker
 wrangler deploy
 ```
 
-Then paste the Worker URL (e.g. `https://bus-tracker-vn-worker.<subdomain>.workers.dev`) into `config.js`:
-```
+After deployment, copy the Worker URL (e.g. `https://bus-tracker-vn-worker.<subdomain>.workers.dev`).
+
+### 2. Configure frontend
+
+Edit `config.js` and set your Worker URL:
+
+```js
 WORKER_URL: 'https://bus-tracker-vn-worker.YOUR_SUBDOMAIN.workers.dev',
 ```
 
-## GitHub repo
-This project is set up as a Git repo. Push to GitHub:
+### 3. Deploy to GitHub Pages
+
 ```bash
+# Create repo and push
 git init
 git add .
-git commit -m "First prototype: HCMC + Hanoi bus tracker"
+git commit -m "Initial commit"
 gh repo create bus-tracker-vn --public --source=. --remote=origin
 git push -u origin main
+
+# Enable GitHub Pages in repo settings → Source: main branch
 ```
 
-## API
-Worker endpoint: `GET /api/buses?city=hcmc` (or `hanoi`)
+Or use GitHub Actions for automatic deployment (see `.github/workflows/`).
 
-## Next steps
-- Decompile `D:\tools\BusMap+Hà+Nội_3.1.2_APKPure (1).xapk` with `apktool.jar` to find the real BusMap API endpoints.
-- Update `normalizeResponse()` in `worker.js` to match the real API contract.
-- Replace `TILE_URL` in `config.js` with FreeRoute's tile URL when SDK docs are available.
+### 4. Access your app
+
+Open: `https://yourusername.github.io/bus-tracker-vn/`
+
+## API Endpoints (Cloudflare Worker)
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/health` | Health check |
+| `GET /api/buses?city=hcmc` | Bus routes & positions for HCMC |
+| `GET /api/buses?city=hanoi` | Bus routes & positions for Hanoi |
+| `GET /api/route/:id` | Route detail with stops & geometry |
+| `GET /api/map-tiles/{z}/{x}/{y}` | Map tile proxy (FreeRoute + OSM fallback) |
+
+## Data Source
+
+- **Bus routes & positions:** [timbus.vn](http://timbus.vn) (live data from Vietnam)
+- **Map tiles:** FreeRoute (your API key) with OpenStreetMap fallback
+- **FreeRoute API key:** `fro_80bfff714e74d8e8e56588a544113339e40f657011771cb54d4fe32c99010d11` (hidden in Worker)
+
+## Features
+
+- ✅ Live bus data from timbus.vn (Hanoi + HCMC)
+- ✅ Start station → End station for every route
+- ✅ FreeRoute map with your API key
+- ✅ Colored route polylines
+- ✅ Bus markers with popups (route, next stop, ETA)
+- ✅ Bus list sidebar with search & filter
+- ✅ Auto-refresh every 30 seconds
+- ✅ Mobile-responsive sidebar
+- ✅ No API keys exposed in frontend
+
+## Next Steps
+
+- Add GitHub Actions workflow for auto-deploy to Pages
+- Add route detail page (`/api/route/:id`)
+- Add real-time bus position polling with WebSocket or longer polling
+- Add HCMC fleetdetail endpoints if timbus.vn supports them
