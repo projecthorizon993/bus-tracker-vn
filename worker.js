@@ -1,7 +1,13 @@
 /**
  * Bus Tracker VN - Cloudflare Worker
- * Secure proxy for bus API data. Hides API keys, handles CORS,
- * and falls back to mock data when no real bus API is configured.
+ * Secure proxy for BusMap API data (reverse-engineered from BusMap APK).
+ * Hides API keys, handles CORS, and falls back to mock data when the real
+ * API is unreachable (api-embus.busmap.vn is geo-restricted to Vietnam).
+ *
+ * Real API endpoints found in decompiled BusMap APK (com.t7.busmaphn 3.1.2):
+ *   GET https://api-embus.busmap.vn/client/public/route/detail?routeId=X
+ *   GET https://api-embus.busmap.vn/client/public/bus/list?routeId=X&direction=Y
+ *   GET https://api-embus.busmap.vn/client/public/bus/list_all
  */
 
 const MOCK_DATA = {
@@ -195,62 +201,128 @@ function json(data, status = 200, headers = {}) {
   });
 }
 
-async function fetchRealBusAPI(city, env) {
-  const apiUrl = env.BUS_API_URL;
-  const apiKey = env.BUS_API_KEY;
-  if (!apiUrl) return null;
+// Known route IDs for each city (from BusMap app data). Used to query the real API.
+// These are example route numbers; the app fetches routes per-region.
+const CITY_ROUTE_IDS = {
+  hcmc: [1, 4, 15, 18, 19],
+  hanoi: [1, 9, 14, 32, 44]
+};
 
-  try {
-    const url = new URL(apiUrl);
-    url.searchParams.set('city', city);
+const EMBUS_BASE = 'https://api-embus.busmap.vn/client/public';
 
-    const headers = {};
-    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
-    headers['Accept'] = 'application/json';
+async function fetchJson(url, headers = {}) {
+  const res = await fetch(url, { headers });
+  if (!res.ok) return null;
+  return res.json();
+}
 
-    const res = await fetch(url.toString(), { headers });
-    if (!res.ok) return null;
+async function fetchRouteDetail(routeId) {
+  const url = `${EMBUS_BASE}/route/detail?routeId=${routeId}`;
+  return fetchJson(url);
+}
 
-    const raw = await res.json();
-    return normalizeResponse(raw, city);
-  } catch (err) {
-    console.warn('Real bus API failed:', err);
-    return null;
-  }
+async function fetchBusList(routeId, direction) {
+  const url = `${EMBUS_BASE}/bus/list?routeId=${routeId}&direction=${direction}`;
+  return fetchJson(url);
 }
 
 /**
- * Normalize whatever the real BusMap API returns into the common shape.
- * Update this function once the real API contract is known from decompilation.
+ * Fetch live bus data from the real BusMap API (api-embus.busmap.vn).
+ * Returns null if unreachable (geo-restricted to Vietnam) so mock fallback is used.
+ */
+async function fetchRealBusAPI(city, env) {
+  const routeIds = CITY_ROUTE_IDS[city] || CITY_ROUTE_IDS.hcmc;
+  const apiKey = env.BUS_API_KEY;
+
+  const headers = { Accept: 'application/json' };
+  if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+
+  const routes = [];
+
+  for (const routeId of routeIds) {
+    try {
+      // Fetch route details (start/end stations, color, path)
+      const route = await fetchRouteDetail(routeId);
+      if (!route) continue;
+
+      // Fetch bus positions for direction 0 (forward)
+      const busesRaw = await fetchBusList(routeId, 0) || [];
+
+      routes.push({
+        id: `embus-${routeId}`,
+        number: route.routeNo || String(routeId),
+        name: (route.routeName && route.routeName[0]) || `Tuyến ${routeId}`,
+        startStation: route.firstStation || '',
+        endStation: route.lastStation || '',
+        color: route.color || '#1976d2',
+        stops: (route.routePaths || []).map((p, i) => ({
+          name: p.stationName || `Điểm ${i + 1}`,
+          lat: p.lat || 0,
+          lng: p.lng || 0,
+          seq: p.seq || i + 1
+        })),
+        buses: (busesRaw || []).map((b) => ({
+          id: b.busId || b.vehicleNumber || `bus-${b.id}`,
+          routeId: String(route.routeId || routeId),
+          lat: b.lat || 0,
+          lng: b.lng || 0,
+          heading: b.deg || 0,
+          nextStop: b.info || '',
+          eta: b.status || '',
+          updatedAt: new Date(b.time * 1000).toISOString() || new Date().toISOString(),
+          vehicleNumber: b.vehicleNumber || '',
+          speed: b.speed || 0
+        }))
+      });
+    } catch (err) {
+      console.warn(`Route ${routeId} failed:`, err);
+      continue;
+    }
+  }
+
+  if (routes.length === 0) return null;
+
+  return {
+    city,
+    cityName: city === 'hcmc' ? 'Ho Chi Minh City' : 'Hanoi',
+    updatedAt: new Date().toISOString(),
+    routes
+  };
+}
+
+/**
+ * Normalize real BusMap API response into the common app shape.
+ * Used when the Worker is called directly with pre-fetched data.
  */
 function normalizeResponse(raw, city) {
-  // Placeholder identity transform — customize after decompiling BusMap XAPK
   return {
     city,
     cityName: city === 'hcmc' ? 'Ho Chi Minh City' : 'Hanoi',
     updatedAt: new Date().toISOString(),
     routes: (raw.routes || []).map((r) => ({
-      id: r.id || r.routeId || r.number,
-      number: r.number || r.routeNumber || '',
-      name: r.name || r.routeName || '',
-      startStation: r.startStation || r.firstStop || r.tramDau || '',
-      endStation: r.endStation || r.lastStop || r.tramCuoi || '',
+      id: r.id || String(r.routeId || r.routeNo || ''),
+      number: r.routeNo || r.number || '',
+      name: (r.routeName && r.routeName[0]) || r.name || '',
+      startStation: r.firstStation || r.startStation || '',
+      endStation: r.lastStation || r.endStation || '',
       color: r.color || '#1976d2',
-      stops: (r.stops || []).map((s, i) => ({
-        name: s.name || s.stopName || '',
+      stops: (r.routePaths || r.stops || []).map((s, i) => ({
+        name: s.stationName || s.name || `Điểm ${i + 1}`,
         lat: s.lat || s.latitude || 0,
         lng: s.lng || s.longitude || 0,
         seq: s.seq || i + 1
       })),
-      buses: (r.buses || r.vehicles || []).map((b) => ({
-        id: b.id || b.vehicleId || '',
-        routeId: r.id || r.routeId || r.number,
+      buses: (r.buses || []).map((b) => ({
+        id: b.busId || b.vehicleId || b.vehicleNumber || '',
+        routeId: String(b.routeId || r.routeId || r.routeNo || ''),
         lat: b.lat || b.latitude || 0,
         lng: b.lng || b.longitude || 0,
-        heading: b.heading || 0,
-        nextStop: b.nextStop || b.nextStopName || '',
-        eta: b.eta || b.estimatedTime || '',
-        updatedAt: b.updatedAt || new Date().toISOString()
+        heading: b.deg || b.heading || 0,
+        nextStop: b.info || b.nextStop || '',
+        eta: b.status || b.eta || '',
+        updatedAt: b.time ? new Date(b.time * 1000).toISOString() : (b.updatedAt || new Date().toISOString()),
+        vehicleNumber: b.vehicleNumber || '',
+        speed: b.speed || 0
       }))
     }))
   };
