@@ -15,6 +15,7 @@ const PORT = process.env.PORT || 3000;
 
 // ---- Real BusMap API endpoints (discovered from APK decompilation) ----
 const EMBUS_BASE = 'https://api-embus.busmap.vn/client/public';
+const BUSMAP_BASE = 'https://api.busmap.vn/v2/public/busmap';
 const CITY_ROUTE_IDS = {
   hcmc: [1, 4, 15, 18, 19],
   hanoi: [1, 9, 14, 32, 44]
@@ -221,11 +222,22 @@ async function fetchJson(url, timeoutMs = 8000) {
 }
 
 async function fetchRouteDetail(routeId) {
-  return fetchJson(`${EMBUS_BASE}/route/detail?routeId=${routeId}`);
+  // Try embus API first (Vietnam-internal), then public busmap API
+  const urls = [
+    `${EMBUS_BASE}/route/detail?routeId=${routeId}`,
+    `${BUSMAP_BASE}/estimate_bus_to_station?regionCode=hcmc&stationId=${routeId}&group=0`
+  ];
+  for (const url of urls) {
+    const result = await fetchJson(url);
+    if (result) return result;
+  }
+  return null;
 }
 
 async function fetchBusList(routeId, direction) {
-  return fetchJson(`${EMBUS_BASE}/bus/list?routeId=${routeId}&direction=${direction}`);
+  // Try embus API first (Vietnam-internal)
+  const url = `${EMBUS_BASE}/bus/list?routeId=${routeId}&direction=${direction}`;
+  return fetchJson(url);
 }
 
 // ---- API endpoint: GET /api/buses?city=hcmc|hanoi ----
@@ -238,11 +250,20 @@ app.get('/api/buses', async (req, res) => {
 
   for (const routeId of routeIds) {
     try {
-      const route = await fetchRouteDetail(routeId);
-      if (!route) continue;
+      console.log(`Fetching route ${routeId} for ${city}...`);
 
+      // Fetch route details (start/end stations, color, path)
+      const route = await fetchRouteDetail(routeId);
+      if (!route) {
+        console.log(`Route ${routeId}: no route data`);
+        continue;
+      }
+
+      // Fetch bus positions for direction 0 (forward)
       const busesRaw = await fetchBusList(routeId, 0) || [];
       liveData = true;
+
+      console.log(`Route ${routeId}: ${busesRaw.length} buses found`);
 
       routes.push({
         id: `embus-${routeId}`,
@@ -279,6 +300,7 @@ app.get('/api/buses', async (req, res) => {
   if (routes.length === 0) {
     // Fall back to mock data
     const mock = MOCK_DATA[city] || MOCK_DATA.hcmc;
+    console.log(`No live data for ${city}, using mock data`);
     res.json({ ...mock, updatedAt: new Date().toISOString(), source: 'mock' });
     return;
   }
@@ -303,31 +325,31 @@ app.get('/api/health', (req, res) => {
 app.get('/api/map-tiles/:z/:x/:y', async (req, res) => {
   const { z, x, y } = req.params;
   const freerouteKey = process.env.FREEROUTE_API_KEY || 'fro_80bfff714e74d8e8e56588a544113339e40f657011771cb54d4fe32c99010d11';
-  const tileUrl = `https://tiles.freeroute.org/${z}/${x}/${y}.png?key=${freerouteKey}`;
+  const tileUrls = [
+    `https://tiles.freeroute.org/${z}/${x}/${y}.png?key=${freerouteKey}`,
+    `https://tile.openstreetmap.org/${z}/${x}/${y}.png`
+  ];
 
-  try {
-    const tileRes = await fetch(tileUrl, {
-      headers: { 'User-Agent': 'BusTrackerVN/1.0' }
-    });
+  for (const tileUrl of tileUrls) {
+    try {
+      const tileRes = await fetch(tileUrl, {
+        headers: { 'User-Agent': 'BusTrackerVN/1.0' }
+      });
 
-    if (!tileRes.ok) {
-      // Fallback to OpenStreetMap tile if FreeRoute tile fails
-      const fallbackUrl = `https://tile.openstreetmap.org/${z}/${x}/${y}.png`;
-      const fbRes = await fetch(fallbackUrl);
-      res.set('Content-Type', fbRes.headers.get('content-type') || 'image/png');
-      res.set('Cache-Control', 'public, max-age=86400');
-      const buffer = await fbRes.arrayBuffer();
-      res.send(Buffer.from(buffer));
-      return;
+      if (tileRes.ok) {
+        res.set('Content-Type', tileRes.headers.get('content-type') || 'image/png');
+        res.set('Cache-Control', 'public, max-age=86400');
+        const buffer = await tileRes.arrayBuffer();
+        res.send(Buffer.from(buffer));
+        return;
+      }
+    } catch (err) {
+      // Try next URL
+      continue;
     }
-
-    res.set('Content-Type', tileRes.headers.get('content-type') || 'image/png');
-    res.set('Cache-Control', 'public, max-age=86400');
-    const buffer = await tileRes.arrayBuffer();
-    res.send(Buffer.from(buffer));
-  } catch (err) {
-    res.status(502).json({ error: 'Tile proxy failed', message: err.message });
   }
+
+  res.status(502).json({ error: 'Tile proxy failed', message: 'All tile sources unavailable' });
 });
 
 // ---- Serve frontend ----
