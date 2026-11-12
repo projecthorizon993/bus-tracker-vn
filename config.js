@@ -7,7 +7,7 @@ const CONFIG = {
   FREEROUTE_API_KEY: 'fro_80bfff714e74d8e8e56588a544113339e40f657011771cb54d4fe32c99010d11',
 
   // Cloudflare Worker URL (deploy worker.js, then paste the workers.dev domain here)
-  WORKER_URL: '',
+  WORKER_URL: 'https://bus-tracker-vn-worker.lequangglobal.workers.dev',
 
   // Default city: 'hcmc' or 'hanoi'
   DEFAULT_CITY: 'hcmc',
