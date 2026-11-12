@@ -4,7 +4,7 @@
  */
 const CONFIG = {
   // Cloudflare Worker URL (deploy worker.js, then paste the workers.dev domain here)
-  WORKER_URL: '',
+  WORKER_URL: 'https://bus-tracker-vn-worker.lequangglobal.workers.dev',
 
   // Default city: 'hcmc' or 'hanoi'
   DEFAULT_CITY: 'hcmc',
