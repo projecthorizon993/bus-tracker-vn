@@ -7,7 +7,7 @@ const CONFIG = {
   FREEROUTE_API_KEY: 'fro_80bfff714e74d8e8e56588a544113339e40f657011771cb54d4fe32c99010d11',
 
   // Cloudflare Worker URL (deploy worker.js, then paste the workers.dev domain here)
-  WORKER_URL: 'https://bus-tracker-vn-worker.lequangglobal.workers.dev',
+  WORKER_URL: 'http://localhost:3000',
 
   // Default city: 'hcmc' or 'hanoi'
   DEFAULT_CITY: 'hcmc',
@@ -21,8 +21,7 @@ const CONFIG = {
     hanoi: { name: 'Hanoi', center: [21.0285, 105.8542], zoom: 13 }
   },
 
-  // Leaflet tile layer. Replace with FreeRoute tile URL when SDK docs are available.
-  // Example FreeRoute pattern: `https://tiles.freeroute.org/{z}/{x}/{y}.png?key=YOUR_KEY`
-  TILE_URL: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-  TILE_ATTR: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+  // Leaflet tile layer. Proxied through local server at /api/map-tiles/{z}/{x}/{y}
+  TILE_URL: 'http://localhost:3000/api/map-tiles/{z}/{x}/{y}',
+  TILE_ATTR: '&copy; FreeRoute'
 };
