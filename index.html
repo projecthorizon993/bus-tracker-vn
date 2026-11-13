@@ -29,8 +29,8 @@
         <button id="cityHanoi">Hà Nội</button>
       </div>
 
-      <div class="search-box">
-        <input type="text" id="routeSearch" placeholder="Tìm tuyến xe..." />
+      <div class="route-selector">
+        <select id="routeSelect"></select>
       </div>
 
       <div class="refresh-bar">
@@ -39,7 +39,18 @@
         <span id="dataSource" style="font-size:11px;color:#4caf50;flex:1;text-align:right;">🔴 Offline</span>
       </div>
 
-      <ul class="bus-list" id="busList"></ul>
+      <div class="scrollable-content">
+        <div class="route-info" id="routeInfo" style="display:none;">
+          <div class="route-header-panel">
+            <div class="route-title" id="routeTitle"></div>
+            <div class="route-stations" id="routeStations"></div>
+            <div class="route-meta" id="routeMeta"></div>
+          </div>
+          <div class="bus-list-title" id="busListTitle">Xe buýt</div>
+          <div class="bus-list" id="busList"></div>
+        </div>
+        <div class="empty-state" id="emptyState">Chọn tuyến xe từ danh sách trên</div>
+      </div>
     </div>
   </div>
 
