@@ -1,6 +1,7 @@
 /**
  * Bus Tracker VN - Frontend Logic (GitHub Pages)
  * Calls Cloudflare Worker API for bus data and map tiles.
+ * Animates buses moving along route geometry based on real-time data.
  */
 
 (() => {
@@ -12,13 +13,14 @@
     map: null,
     layerGroup: null,
     polylines: [],
-    markers: [],
+    markers: [],        // bus markers
     stopMarkers: [],
     data: null,
     refreshTimer: null,
     isSidebarOpen: false,
-    visibleRouteIds: new Set(), // track which routes are visible on map
-    hiddenRoutes: new Set()     // routes user has hidden
+    hiddenRoutes: new Set(),
+    busPositions: new Map(), // busId -> {lat, lng, targetLat, targetLng, progress, routeId, busData}
+    animationFrame: null
   };
 
   // ---------- DOM ----------
@@ -44,6 +46,7 @@
     initMap();
     loadCity(state.city);
     startAutoRefresh();
+    startAnimation();
   }
 
   function setupEventListeners() {
@@ -77,7 +80,6 @@
       zoomControl: true
     });
 
-    // Tile URL proxied through Cloudflare Worker
     const tileUrl = CONFIG.TILE_URL.replace('${WORKER_URL}', CONFIG.WORKER_URL || '');
 
     L.tileLayer(tileUrl, {
@@ -91,7 +93,6 @@
   function fitMapToVisible() {
     if (!state.data || !state.data.routes) return;
     const group = L.featureGroup();
-    // Only add visible routes' polylines and markers
     state.data.routes.forEach((route) => {
       if (state.hiddenRoutes.has(route.id)) return;
       state.polylines.forEach((pl) => { if (pl.options.routeId === route.id) group.addLayer(pl); });
@@ -112,23 +113,56 @@
     state.stopMarkers = [];
   }
 
-  function updateMapVisibility(filter = '') {
-    const term = filter.toLowerCase();
-    state.data.routes.forEach((route) => {
-      const matches = !term ||
-        route.number.toLowerCase().includes(term) ||
-        route.startStation.toLowerCase().includes(term) ||
-        route.endStation.toLowerCase().includes(term);
-      if (matches) {
-        state.hiddenRoutes.delete(route.id);
-      } else {
-        state.hiddenRoutes.add(route.id);
-      }
+  // Create or update bus marker with animation
+  function getOrCreateBusMarker(bus, route) {
+    const existing = state.markers.find(m => m.options.busId === bus.id);
+    if (existing) {
+      // Update target position for animation
+      const targetLat = bus.lat;
+      const targetLng = bus.lng;
+      const current = state.busPositions.get(bus.id) || { lat: targetLat, lng: targetLng, targetLat, targetLng, progress: 1 };
+      current.targetLat = targetLat;
+      current.targetLng = targetLng;
+      current.progress = 0; // restart animation
+      current.routeId = route.id;
+      current.busData = bus;
+      state.busPositions.set(bus.id, current);
+      return existing;
+    }
+
+    const marker = L.marker([bus.lat, bus.lng], {
+      title: `Xe ${bus.id}`,
+      busId: bus.id,
+      routeId: route.id,
+      icon: L.divIcon({
+        className: 'bus-marker',
+        html: `<div style="background:${bus.simulated ? '#ff9800' : '#1a73e8'};color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:bold;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.5);">${route.number}</div>`,
+        iconSize: [22, 22],
+        iconAnchor: [11, 11]
+      })
     });
-    redrawMap();
+    marker.bindPopup(`
+      <div class="popup-title">Tuyến ${route.number}</div>
+      <div class="popup-stations">${route.startStation} <span class="arrow">→</span> ${route.endStation}</div>
+      <div><strong>Xe:</strong> ${bus.id}</div>
+      <div><strong>Điểm tiếp theo:</strong> ${bus.nextStop}</div>
+      <div class="popup-eta">⏱ ${bus.eta}</div>
+      <div class="popup-updated">Cập nhật: ${new Date(bus.updatedAt).toLocaleTimeString('vi-VN')}</div>
+      <div style="font-size:11px;color:${bus.simulated ? '#ff9800' : '#1a73e8'}">${bus.simulated ? 'Mô phỏng' : 'Thực tế'}</div>
+    `);
+
+    state.markers.push(marker);
+    marker.addTo(state.layerGroup);
+
+    state.busPositions.set(bus.id, {
+      lat: bus.lat, lng: bus.lng, targetLat: bus.lat, targetLng: bus.lng,
+      progress: 1, routeId: route.id, busData: bus
+    });
+
+    return marker;
   }
 
-  function redrawMap() {
+  function renderMap() {
     clearMap();
     if (!state.data || !state.data.routes) return;
 
@@ -200,35 +234,70 @@
         state.stopMarkers.push(m);
       });
 
-      // ALL bus markers - moving on map based on data
+      // ALL bus markers
       (route.buses || []).forEach((bus) => {
         if (!bus.lat || !bus.lng) return;
-        const isSimulated = bus.simulated;
-        const marker = L.marker([bus.lat, bus.lng], {
-          title: `Xe ${bus.id}`,
-          icon: L.divIcon({
-            className: 'bus-marker',
-            html: `<div style="background:${isSimulated ? '#ff9800' : '#1a73e8'};color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:bold;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.5);">${route.number}</div>`,
-            iconSize: [22, 22],
-            iconAnchor: [11, 11]
-          })
-        });
-        marker.options.routeId = route.id;
-        marker.bindPopup(`
-          <div class="popup-title">Tuyến ${route.number}</div>
-          <div class="popup-stations">${route.startStation} <span class="arrow">→</span> ${route.endStation}</div>
-          <div><strong>Xe:</strong> ${bus.id}</div>
-          <div><strong>Điểm tiếp theo:</strong> ${bus.nextStop}</div>
-          <div class="popup-eta">⏱ ${bus.eta}</div>
-          <div class="popup-updated">Cập nhật: ${new Date(bus.updatedAt).toLocaleTimeString('vi-VN')}</div>
-          <div style="font-size:11px;color:${isSimulated ? '#ff9800' : '#1a73e8'}">${isSimulated ? 'Mô phỏng' : 'Thực tế'}</div>
-        `);
-        state.markers.push(marker);
+        getOrCreateBusMarker(bus, route);
       });
     });
 
     fitMapToVisible();
     els.mapInfo.textContent = `${state.data.cityName} — ${state.data.routes.length} tuyến`;
+  }
+
+  // Animation loop - smoothly move buses between positions
+  function startAnimation() {
+    let lastTime = Date.now();
+
+    function animate(now) {
+      const dt = now - lastTime;
+      lastTime = now;
+      const dtSeconds = dt / 1000;
+      const speed = 0.15; // interpolation speed per second
+
+      let moved = false;
+
+      state.markers.forEach((marker) => {
+        const busId = marker.options.busId;
+        const pos = state.busPositions.get(busId);
+        if (!pos) return;
+
+        // Interpolate toward target
+        if (pos.progress < 1) {
+          pos.progress = Math.min(1, pos.progress + speed * dtSeconds);
+          const t = pos.progress;
+          const lat = pos.lat + (pos.targetLat - pos.lat) * t;
+          const lng = pos.lng + (pos.targetLng - pos.lng) * t;
+          marker.setLatLng([lat, lng]);
+          moved = true;
+        }
+
+        // Update popup with latest data
+        const route = state.data ? state.data.routes.find(r => r.id === pos.routeId) : null;
+        if (route) {
+          const bus = route.buses.find(b => b.id === busId);
+          if (bus) {
+            marker.options.title = `Xe ${bus.id}`;
+            const popupContent = `
+              <div class="popup-title">Tuyến ${route.number}</div>
+              <div class="popup-stations">${route.startStation} <span class="arrow">→</span> ${route.endStation}</div>
+              <div><strong>Xe:</strong> ${bus.id}</div>
+              <div><strong>Điểm tiếp theo:</strong> ${bus.nextStop}</div>
+              <div class="popup-eta">⏱ ${bus.eta}</div>
+              <div class="popup-updated">Cập nhật: ${new Date(bus.updatedAt).toLocaleTimeString('vi-VN')}</div>
+              <div style="font-size:11px;color:${bus.simulated ? '#ff9800' : '#1a73e8'}">${bus.simulated ? 'Mô phỏng' : 'Thực tế'}</div>
+            `;
+            marker.setPopupContent(popupContent);
+          }
+        }
+      });
+
+      if (moved || state.animationFrame) {
+        state.animationFrame = requestAnimationFrame(animate);
+      }
+    }
+
+    state.animationFrame = requestAnimationFrame(animate);
   }
 
   // ---------- Data ----------
@@ -270,7 +339,6 @@
     els.cityHCMC.classList.toggle('active', city === 'hcmc');
     els.cityHanoi.classList.toggle('active', city === 'hanoi');
 
-    // Reset hidden routes when switching city
     state.hiddenRoutes = new Set();
 
     if (state.map) {
@@ -344,7 +412,85 @@
     });
   }
 
-  // Toggle route visibility on map and list
+  function redrawMap() {
+    clearMap();
+    if (!state.data || !state.data.routes) return;
+
+    state.data.routes.forEach((route) => {
+      if (state.hiddenRoutes.has(route.id)) return;
+
+      const latlngs = route.stops.filter(s => s.lat && s.lng).map(s => [s.lat, s.lng]);
+      if (latlngs.length > 1) {
+        const polyline = L.polyline(latlngs, {
+          color: route.color,
+          weight: 4,
+          opacity: 0.8,
+          className: 'route-line'
+        });
+        polyline.options.routeId = route.id;
+        polyline.addTo(state.layerGroup);
+        state.polylines.push(polyline);
+      }
+
+      const start = route.stops[0];
+      if (start && start.lat && start.lng) {
+        const m = L.marker([start.lat, start.lng], {
+          title: `ĐẦU: ${start.name}`,
+          icon: L.divIcon({
+            className: 'station-marker start-marker',
+            html: `<div style="background:#4caf50;color:#fff;border-radius:50%;width:18px;height:18px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:bold;border:2px solid #fff;box-shadow:0 2px 4px rgba(0,0,0,0.5);">A</div>`,
+            iconSize: [18, 18],
+            iconAnchor: [9, 9]
+          })
+        });
+        m.options.routeId = route.id;
+        m.addTo(state.layerGroup);
+        state.stopMarkers.push(m);
+      }
+
+      const end = route.stops[route.stops.length - 1];
+      if (end && end.lat && end.lng) {
+        const m = L.marker([end.lat, end.lng], {
+          title: `CUỐI: ${end.name}`,
+          icon: L.divIcon({
+            className: 'station-marker end-marker',
+            html: `<div style="background:#f44336;color:#fff;border-radius:50%;width:18px;height:18px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:bold;border:2px solid #fff;box-shadow:0 2px 4px rgba(0,0,0,0.5);">B</div>`,
+            iconSize: [18, 18],
+            iconAnchor: [9, 9]
+          })
+        });
+        m.options.routeId = route.id;
+        m.addTo(state.layerGroup);
+        state.stopMarkers.push(m);
+      }
+
+      route.stops.forEach((stop, i) => {
+        if (i === 0 || i === route.stops.length - 1) return;
+        if (!stop.lat || !stop.lng) return;
+        const m = L.circleMarker([stop.lat, stop.lng], {
+          radius: 3,
+          color: route.color,
+          fillColor: '#fff',
+          fillOpacity: 0.8,
+          weight: 2
+        });
+        m.bindTooltip(`${stop.seq}. ${stop.name}`, { direction: 'top', offset: [0, -5] });
+        m.options.routeId = route.id;
+        m.addTo(state.layerGroup);
+        state.stopMarkers.push(m);
+      });
+
+      (route.buses || []).forEach((bus) => {
+        if (!bus.lat || !bus.lng) return;
+        getOrCreateBusMarker(bus, route);
+      });
+    });
+
+    fitMapToVisible();
+    els.mapInfo.textContent = `${state.data.cityName} — ${state.data.routes.length} tuyến`;
+  }
+
+  // Toggle route visibility
   window.toggleRoute = function(routeId, headerEl) {
     if (state.hiddenRoutes.has(routeId)) {
       state.hiddenRoutes.delete(routeId);
@@ -367,6 +513,7 @@
   }
 
   // ---------- Expose for inline onclick ----------
+  window.toggleRoute = window.toggleRoute;
   window.renderList = renderList;
 
   // ---------- Boot ----------
