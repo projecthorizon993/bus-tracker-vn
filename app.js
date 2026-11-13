@@ -13,6 +13,7 @@
     layerGroup: null,
     polylines: [],
     markers: [],
+    stopMarkers: [],
     data: null,
     refreshTimer: null,
     isSidebarOpen: false
@@ -87,6 +88,7 @@
     const group = L.featureGroup();
     state.polylines.forEach((pl) => group.addLayer(pl));
     state.markers.forEach((m) => group.addLayer(m));
+    state.stopMarkers.forEach((m) => group.addLayer(m));
     if (group.getLayers().length > 0) {
       state.map.fitBounds(group.getBounds().pad(0.15));
     } else {
@@ -98,6 +100,7 @@
     state.layerGroup.clearLayers();
     state.polylines = [];
     state.markers = [];
+    state.stopMarkers = [];
   }
 
   function renderMap() {
@@ -105,7 +108,7 @@
     if (!state.data || !state.data.routes) return;
 
     state.data.routes.forEach((route) => {
-      // Route polyline from stops
+      // Route polyline from ALL stops
       const latlngs = route.stops.filter(s => s.lat && s.lng).map(s => [s.lat, s.lng]);
       if (latlngs.length > 1) {
         const polyline = L.polyline(latlngs, {
@@ -117,44 +120,58 @@
         state.polylines.push(polyline);
       }
 
-      // Start & end station markers
+      // Start & end station markers (larger, with letters)
       const start = route.stops[0];
       const end = route.stops[route.stops.length - 1];
 
       if (start && start.lat && start.lng) {
         L.marker([start.lat, start.lng], {
-          title: `Đầu: ${start.name}`,
+          title: `ĐẦU: ${start.name}`,
           icon: L.divIcon({
-            className: 'custom-div-icon',
-            html: `<div style="background:${route.color};color:#fff;border-radius:50%;width:14px;height:14px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:bold;border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,0.4);">${start.name.charAt(0)}</div>`,
-            iconSize: [14, 14],
-            iconAnchor: [7, 7]
+            className: 'station-marker start-marker',
+            html: `<div style="background:${route.color};color:#fff;border-radius:50%;width:18px;height:18px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:bold;border:2px solid #fff;box-shadow:0 2px 4px rgba(0,0,0,0.5);">A</div>`,
+            iconSize: [18, 18],
+            iconAnchor: [9, 9]
           })
         }).addTo(state.layerGroup);
       }
 
       if (end && end.lat && end.lng) {
         L.marker([end.lat, end.lng], {
-          title: `Cuối: ${end.name}`,
+          title: `CUỐI: ${end.name}`,
           icon: L.divIcon({
-            className: 'custom-div-icon',
-            html: `<div style="background:${route.color};color:#fff;border-radius:50%;width:14px;height:14px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:bold;border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,0.4);">${end.name.charAt(0)}</div>`,
-            iconSize: [14, 14],
-            iconAnchor: [7, 7]
+            className: 'station-marker end-marker',
+            html: `<div style="background:${route.color};color:#fff;border-radius:50%;width:18px;height:18px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:bold;border:2px solid #fff;box-shadow:0 2px 4px rgba(0,0,0,0.5);">B</div>`,
+            iconSize: [18, 18],
+            iconAnchor: [9, 9]
           })
         }).addTo(state.layerGroup);
       }
 
-      // Bus markers
+      // Intermediate stop markers (small dots for ALL stops)
+      route.stops.forEach((stop, i) => {
+        if (i === 0 || i === route.stops.length - 1) return; // skip start/end (already marked)
+        if (!stop.lat || !stop.lng) return;
+        L.circleMarker([stop.lat, stop.lng], {
+          radius: 3,
+          color: route.color,
+          fillColor: '#fff',
+          fillOpacity: 0.8,
+          weight: 2
+        }).bindTooltip(`${stop.seq}. ${stop.name}`, { direction: 'top', offset: [0, -5] }).addTo(state.layerGroup);
+      });
+
+      // ALL bus markers
       (route.buses || []).forEach((bus) => {
         if (!bus.lat || !bus.lng) return;
+        const isSimulated = bus.simulated;
         const marker = L.marker([bus.lat, bus.lng], {
           title: `Xe ${bus.id}`,
           icon: L.divIcon({
             className: 'bus-marker',
-            html: `<div style="background:#1a73e8;color:#fff;border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:bold;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.4);">${route.number}</div>`,
-            iconSize: [20, 20],
-            iconAnchor: [10, 10]
+            html: `<div style="background:${isSimulated ? '#ff9800' : '#1a73e8'};color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:bold;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.5);">${route.number}</div>`,
+            iconSize: [22, 22],
+            iconAnchor: [11, 11]
           })
         }).addTo(state.layerGroup);
 
@@ -165,6 +182,7 @@
           <div><strong>Điểm tiếp theo:</strong> ${bus.nextStop}</div>
           <div class="popup-eta">⏱ ${bus.eta}</div>
           <div class="popup-updated">Cập nhật: ${new Date(bus.updatedAt).toLocaleTimeString('vi-VN')}</div>
+          <div style="font-size:11px;color:${isSimulated ? '#ff9800' : '#1a73e8'}">${isSimulated ? 'Mô phỏng' : 'Thực tế'}</div>
         `);
 
         state.markers.push(marker);
@@ -270,13 +288,12 @@
             <div class="bus-info">
               <div class="bus-id">Xe ${bus.id || '—'}</div>
               <div class="bus-eta">Tiếp theo: ${bus.nextStop || '—'} · ${bus.eta || '—'}</div>
+              <div style="font-size:11px;color:${bus.simulated ? '#ff9800' : '#1a73e8'}">${bus.simulated ? 'Mô phỏng' : 'Thực tế'}</div>
             </div>
             <div class="bus-status">${bus.eta ? 'Đang chạy' : 'Lên lịch'}</div>
           </div>
-          ${route.stops && route.stops.length > 0
-            ? `<div style="margin-top:6px; font-size:11px; color:#666;">${route.stops.map(s => s.name).join(' → ')}</div>`
-            : ''
-          }
+          <div style="margin-top:6px; font-size:11px; color:#666;">${route.stops.map(s => s.name).join(' → ')}</div>
+          <div style="margin-top:4px; font-size:11px; color:#999;">Tổng số xe: ${route.busCount || route.buses.length}</div>
         </div>
       `;
       els.busList.appendChild(li);

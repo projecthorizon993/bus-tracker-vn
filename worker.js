@@ -83,11 +83,11 @@ function parseRouteName(name) {
   };
 }
 
-/** Convert timbus.vn Geo array (Lat,Lng) to route stops */
+/** Convert timbus.vn Geo array (Lat,Lng) to route stops - shows ALL points */
 function geoToStops(geo) {
   if (!geo || !Array.isArray(geo)) return [];
   return geo.map((p, i) => ({
-    name: `Điểm ${i + 1}`,
+    name: p.Name || `Điểm ${i + 1}`,
     lat: p.Lat || 0,
     lng: p.Lng || 0,
     seq: i + 1
@@ -116,6 +116,37 @@ function formatETA(seconds) {
   const s = seconds % 60;
   if (m > 0) return `${m} phút`;
   return `${s} giây`;
+}
+
+/**
+ * Create simulated buses spaced along a route's geometry.
+ * Distributes busCount buses evenly along the Go.Geo path.
+ */
+function createSimulatedBuses(stops, routeId, routeNumber, busCount = 3) {
+  if (!stops || stops.length === 0) return [];
+  const buses = [];
+  const count = Math.min(Math.max(busCount, 1), stops.length);
+  const step = Math.floor((stops.length - 1) / (count - 1)) || 1;
+
+  for (let i = 0; i < count; i++) {
+    const idx = Math.min(i * step, stops.length - 1);
+    const stop = stops[idx];
+    const isLast = idx >= stops.length - 1;
+    buses.push({
+      id: `sim-${routeId}-${i}`,
+      routeId,
+      lat: stop.lat,
+      lng: stop.lng,
+      heading: isLast ? 0 : 90,
+      nextStop: isLast ? stop.name : stops[idx + 1]?.name || '',
+      eta: isLast ? 'Đến cuối' : `${Math.max(1, (idx + 1) * 3)} phút`,
+      updatedAt: new Date().toISOString(),
+      vehicleNumber: `Xe ${i + 1}`,
+      speed: isLast ? 0 : 25,
+      simulated: true
+    });
+  }
+  return buses;
 }
 
 // ---- Worker ----
@@ -161,23 +192,34 @@ export default {
           let stops = [];
           let stationIds = [];
           let buses = [];
+          let busCount = 3; // default simulated bus count
 
           if (fleet && fleet.success && fleet.dt) {
             const fd = fleet.dt;
+
+            // ALWAYS use ALL Go.Geo points as stops (full route geometry)
             stops = geoToStops(fd.Go?.Geo || []);
-            // Use station list if available (has real lat/lng + ObjectID for vehicle queries)
+
+            // Use station list for names + ObjectIDs (for vehicle queries)
+            // Merge station names onto geo stops where possible
             if (fd.Station && Array.isArray(fd.Station)) {
-              stops = fd.Station.map((s, i) => ({
-                name: s.Name || `Điểm ${i + 1}`,
-                lat: s.Geo?.Lat || 0,
-                lng: s.Geo?.Lng || 0,
-                seq: s.Geo ? i + 1 : i + 1
-              }));
               stationIds = fd.Station.filter(s => s.ObjectID).map(s => s.ObjectID);
+              // Overlay station names onto geo stops by matching index
+              stops = stops.map((s, i) => {
+                const station = fd.Station[i];
+                return {
+                  name: station?.Name || s.name,
+                  lat: station?.Geo?.Lat || s.lat,
+                  lng: station?.Geo?.Lng || s.lng,
+                  seq: s.seq
+                };
+              });
             }
 
-            // Get real-time vehicle positions from first 3 stations
-            for (const sid of stationIds.slice(0, 3)) {
+            busCount = fd.BusCount || 3;
+
+            // Get real-time vehicle positions from first 5 stations (increased from 3)
+            for (const sid of stationIds.slice(0, 5)) {
               try {
                 const vr = await getVehiclesAtStation(sid);
                 if (vr && vr.success) {
@@ -192,7 +234,7 @@ export default {
                       // Use the station where the vehicle was detected as its position
                       const station = fd.Station.find(s => s.ObjectID == sid);
                       buses.push({
-                        id: plate || `bus-${Math.random()}`,
+                        id: plate || `real-${Math.random()}`,
                         routeId: item.FleedCode || item.ObjectID,
                         lat: station?.Geo?.Lat || 0,
                         lng: station?.Geo?.Lng || 0,
@@ -203,7 +245,8 @@ export default {
                         vehicleNumber: plate,
                         speed,
                         fleetCode,
-                        timeRemainedSeconds: etaSeconds
+                        timeRemainedSeconds: etaSeconds,
+                        realTime: true
                       });
                     }
                   }
@@ -214,22 +257,11 @@ export default {
               // Small delay between requests
               await new Promise(r => setTimeout(r, 200));
             }
+          }
 
-            // If no real vehicles found, create a placeholder at start
-            if (buses.length === 0 && stops.length > 0) {
-              buses = [{
-                id: `timbus-${item.ObjectID}`,
-                routeId: item.FleedCode || item.ObjectID,
-                lat: stops[0]?.lat || 0,
-                lng: stops[0]?.lng || 0,
-                heading: 0,
-                nextStop: stops[1]?.name || '',
-                eta: 'Lên lịch',
-                updatedAt: new Date().toISOString(),
-                vehicleNumber: '',
-                speed: 0
-              }];
-            }
+          // If no real vehicles found, create simulated buses along the route
+          if (buses.length === 0 && stops.length > 0) {
+            buses = createSimulatedBuses(stops, item.ObjectID, parsed.number, busCount);
           }
 
           routes.push({
@@ -240,7 +272,8 @@ export default {
             endStation: parsed.endStation,
             color: '#1976d2',
             stops,
-            buses
+            buses,
+            busCount
           });
         }
       }
@@ -280,11 +313,39 @@ export default {
       const fd = fleet.dt;
       const parsed = parseRouteName(fd.Name);
 
-      // Get vehicle positions for this route's stations
+      // Use ALL Go.Geo points as stops
+      const stops = geoToStops(fd.Go?.Geo || []);
+
+      // Merge station names
+      let stations = [];
+      if (fd.Station && Array.isArray(fd.Station)) {
+        stations = stops.map((s, i) => {
+          const station = fd.Station[i];
+          return {
+            id: station?.ObjectID,
+            code: station?.Code,
+            name: station?.Name || s.name,
+            lat: station?.Geo?.Lat || s.lat,
+            lng: station?.Geo?.Lng || s.lng,
+            seq: s.seq
+          };
+        });
+      } else {
+        stations = stops.map((s, i) => ({
+          id: null,
+          code: null,
+          name: s.name,
+          lat: s.lat,
+          lng: s.lng,
+          seq: s.seq
+        }));
+      }
+
+      // Get vehicle positions for this route's stations (more stations)
       let buses = [];
       if (fd.Station && Array.isArray(fd.Station)) {
         const stationIds = fd.Station.filter(s => s.ObjectID).map(s => s.ObjectID);
-        for (const sid of stationIds.slice(0, 3)) {
+        for (const sid of stationIds.slice(0, 5)) {
           try {
             const vr = await getVehiclesAtStation(sid);
             if (vr && vr.success) {
@@ -303,7 +364,8 @@ export default {
                     vehicleNumber: v.BienKiemSoat || '',
                     speed: v.Speed || 0,
                     fleetCode: v.FleetCode || v.Fleet || '',
-                    timeRemainedSeconds: v.TimeRemained || v.PartRemained || 0
+                    timeRemainedSeconds: v.TimeRemained || v.PartRemained || 0,
+                    realTime: true
                   });
                 }
               }
@@ -313,6 +375,12 @@ export default {
           }
           await new Promise(r => setTimeout(r, 200));
         }
+      }
+
+      // If no real vehicles, create simulated buses along route
+      if (buses.length === 0 && stops.length > 0) {
+        buses = createSimulatedBuses(stops, fd.FleetID || id, parsed.number, fd.BusCount || 3);
+        buses = buses.map(b => ({ ...b, simulated: true }));
       }
 
       return json({
@@ -327,16 +395,9 @@ export default {
         frequency: fd.Frequency,
         cost: fd.Cost,
         enterprise: fd.Enterprise,
-        busCount: fd.BusCount,
-        stops: geoToStops(fd.Go?.Geo || []),
-        stations: (fd.Station || []).map((s, i) => ({
-          id: s.ObjectID,
-          code: s.Code,
-          name: s.Name,
-          lat: s.Geo?.Lat || 0,
-          lng: s.Geo?.Lng || 0,
-          seq: i + 1
-        })),
+        busCount: fd.BusCount || 3,
+        stops,
+        stations,
         routes: {
           go: geoToStops(fd.Go?.Geo || []),
           back: geoToStops(fd.Re?.Geo || [])
