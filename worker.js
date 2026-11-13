@@ -2,6 +2,11 @@
  * Bus Tracker VN - Cloudflare Worker
  * Backend proxy for timbus.vn bus data and FreeRoute map tiles.
  * Hides API keys server-side, handles CORS, manages timbus.vn session cookies.
+ *
+ * Endpoints (reverse-engineered from timbus.vn HAR + APK decompilation):
+ *   POST /Engine/Business/Search/action.ashx?act=searchfull&typ=1&key=<query>  - search routes
+ *   POST /Engine/Business/Search/action.ashx?act=fleetdetail&fid=<id>           - route detail + geometry
+ *   POST /Engine/Business/Vehicle/action.ashx?act=partremained                  - vehicle ETA at station
  */
 
 // ---- Config ----
@@ -30,24 +35,11 @@ function json(data, status = 200, extra = {}) {
   });
 }
 
-async function fetchWithRetry(url, init, retries = 2) {
-  for (let i = 0; i < retries; i++) {
-    try {
-      const res = await fetch(url, init);
-      if (res.ok) return res;
-    } catch (e) {
-      // retry
-    }
-    await new Promise(r => setTimeout(r, 500));
-  }
-  return null;
-}
-
 /**
  * timbus.vn session fetch: GET homepage first to get ASP.NET_SessionId cookie,
  * then POST to action.ashx with the cookie.
  */
-async function timbusFetch(act, keyOrFid, isFleet = false) {
+async function timbusPost(basePath, actParams) {
   const cookieJar = {};
 
   // Step 1: GET homepage to establish session cookie
@@ -60,11 +52,9 @@ async function timbusFetch(act, keyOrFid, isFleet = false) {
   if (sessionMatch) cookieJar['ASP.NET_SessionId'] = sessionMatch[1];
 
   // Step 2: POST to action.ashx
-  const body = isFleet
-    ? `act=fleetdetail&fid=${keyOrFid}`
-    : `act=searchfull&typ=1&key=${keyOrFid}`;
+  const body = Object.entries(actParams).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&');
 
-  const postRes = await fetch('http://timbus.vn/Engine/Business/Search/action.ashx', {
+  const postRes = await fetch(`http://timbus.vn${basePath}`, {
     method: 'POST',
     headers: {
       ...TIMBUS_HEADERS,
@@ -104,6 +94,30 @@ function geoToStops(geo) {
   }));
 }
 
+/**
+ * Get real-time vehicle positions at a station.
+ * act=partremained&State=true&StationID=<id>&FleetOver=
+ * Returns buses approaching/at that station with ETA.
+ */
+async function getVehiclesAtStation(stationId) {
+  const result = await timbusPost('/Engine/Business/Vehicle/action.ashx', {
+    act: 'partremained',
+    State: 'true',
+    StationID: String(stationId),
+    FleetOver: ''
+  });
+  return result;
+}
+
+/** Format seconds to readable time */
+function formatETA(seconds) {
+  if (!seconds || seconds <= 0) return 'Lên lịch';
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  if (m > 0) return `${m} phút`;
+  return `${s} giây`;
+}
+
 // ---- Worker ----
 export default {
   async fetch(request, env, ctx) {
@@ -130,20 +144,28 @@ export default {
       const city = (url.searchParams.get('city') || 'hcmc').toLowerCase();
       const searchKey = city === 'hcmc' ? '60B' : '01';
 
-      const timbus = await timbusFetch('searchfull', searchKey, false);
+      const timbus = await timbusPost('/Engine/Business/Search/action.ashx', {
+        act: 'searchfull',
+        typ: '1',
+        key: searchKey
+      });
       const routes = [];
 
       if (timbus && timbus.success && timbus.dt && Array.isArray(timbus.dt.Data)) {
         for (const item of timbus.dt.Data) {
           const parsed = parseRouteName(item.Name);
-          const fleet = await timbusFetch('fleetdetail', item.ObjectID, true);
+          const fleet = await timbusPost('/Engine/Business/Search/action.ashx', {
+            act: 'fleetdetail',
+            fid: item.ObjectID
+          });
           let stops = [];
+          let stationIds = [];
           let buses = [];
 
           if (fleet && fleet.success && fleet.dt) {
             const fd = fleet.dt;
             stops = geoToStops(fd.Go?.Geo || []);
-            // Use station list if available
+            // Use station list if available (has real lat/lng + ObjectID for vehicle queries)
             if (fd.Station && Array.isArray(fd.Station)) {
               stops = fd.Station.map((s, i) => ({
                 name: s.Name || `Điểm ${i + 1}`,
@@ -151,21 +173,63 @@ export default {
                 lng: s.Geo?.Lng || 0,
                 seq: s.Geo ? i + 1 : i + 1
               }));
+              stationIds = fd.Station.filter(s => s.ObjectID).map(s => s.ObjectID);
             }
-            // buses: timbus.vn searchfull doesn't include real-time positions,
-            // but fleetdetail has route geometry. We'll mark as scheduled.
-            buses = [{
-              id: `timbus-${item.ObjectID}`,
-              routeId: item.FleedCode || item.ObjectID,
-              lat: stops[0]?.lat || 0,
-              lng: stops[0]?.lng || 0,
-              heading: 0,
-              nextStop: stops[1]?.name || '',
-              eta: 'Lên lịch',
-              updatedAt: new Date().toISOString(),
-              vehicleNumber: '',
-              speed: 0
-            }];
+
+            // Get real-time vehicle positions from first 3 stations
+            for (const sid of stationIds.slice(0, 3)) {
+              try {
+                const vr = await getVehiclesAtStation(sid);
+                if (vr && vr.success) {
+                  const vdata = vr.dt || vr.data || vr;
+                  if (Array.isArray(vdata)) {
+                    for (const v of vdata) {
+                      const plate = v.BienKiemSoat || v.LicensePlate || '';
+                      const fleetCode = v.FleetCode || v.Fleet || '';
+                      const etaSeconds = v.TimeRemained || v.PartRemained || 0;
+                      const speed = v.Speed || 0;
+
+                      // Use the station where the vehicle was detected as its position
+                      const station = fd.Station.find(s => s.ObjectID == sid);
+                      buses.push({
+                        id: plate || `bus-${Math.random()}`,
+                        routeId: item.FleedCode || item.ObjectID,
+                        lat: station?.Geo?.Lat || 0,
+                        lng: station?.Geo?.Lng || 0,
+                        heading: 0,
+                        nextStop: station?.Name || (stops[1]?.name || ''),
+                        eta: formatETA(etaSeconds),
+                        updatedAt: new Date().toISOString(),
+                        vehicleNumber: plate,
+                        speed,
+                        fleetCode,
+                        timeRemainedSeconds: etaSeconds
+                      });
+                    }
+                  }
+                }
+              } catch (e) {
+                // skip failed station queries
+              }
+              // Small delay between requests
+              await new Promise(r => setTimeout(r, 200));
+            }
+
+            // If no real vehicles found, create a placeholder at start
+            if (buses.length === 0 && stops.length > 0) {
+              buses = [{
+                id: `timbus-${item.ObjectID}`,
+                routeId: item.FleedCode || item.ObjectID,
+                lat: stops[0]?.lat || 0,
+                lng: stops[0]?.lng || 0,
+                heading: 0,
+                nextStop: stops[1]?.name || '',
+                eta: 'Lên lịch',
+                updatedAt: new Date().toISOString(),
+                vehicleNumber: '',
+                speed: 0
+              }];
+            }
           }
 
           routes.push({
@@ -204,7 +268,10 @@ export default {
     // ---- Route detail: /api/route/:id ----
     if (path.startsWith('/api/route/')) {
       const id = path.split('/').pop();
-      const fleet = await timbusFetch('fleetdetail', id, true);
+      const fleet = await timbusPost('/Engine/Business/Search/action.ashx', {
+        act: 'fleetdetail',
+        fid: id
+      });
 
       if (!fleet || !fleet.success || !fleet.dt) {
         return json({ error: 'Route not found' }, 404);
@@ -212,6 +279,41 @@ export default {
 
       const fd = fleet.dt;
       const parsed = parseRouteName(fd.Name);
+
+      // Get vehicle positions for this route's stations
+      let buses = [];
+      if (fd.Station && Array.isArray(fd.Station)) {
+        const stationIds = fd.Station.filter(s => s.ObjectID).map(s => s.ObjectID);
+        for (const sid of stationIds.slice(0, 3)) {
+          try {
+            const vr = await getVehiclesAtStation(sid);
+            if (vr && vr.success) {
+              const vdata = vr.dt || vr.data || vr;
+              if (Array.isArray(vdata)) {
+                for (const v of vdata) {
+                  const station = fd.Station.find(s => s.ObjectID == sid);
+                  buses.push({
+                    id: v.BienKiemSoat || `bus-${Math.random()}`,
+                    lat: station?.Geo?.Lat || 0,
+                    lng: station?.Geo?.Lng || 0,
+                    heading: 0,
+                    nextStop: station?.Name || '',
+                    eta: formatETA(v.TimeRemained || v.PartRemained || 0),
+                    updatedAt: new Date().toISOString(),
+                    vehicleNumber: v.BienKiemSoat || '',
+                    speed: v.Speed || 0,
+                    fleetCode: v.FleetCode || v.Fleet || '',
+                    timeRemainedSeconds: v.TimeRemained || v.PartRemained || 0
+                  });
+                }
+              }
+            }
+          } catch (e) {
+            // skip
+          }
+          await new Promise(r => setTimeout(r, 200));
+        }
+      }
 
       return json({
         id: fd.FleetID || id,
@@ -239,6 +341,7 @@ export default {
           go: geoToStops(fd.Go?.Geo || []),
           back: geoToStops(fd.Re?.Geo || [])
         },
+        buses,
         updatedAt: new Date().toISOString(),
         source: 'live'
       });
