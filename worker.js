@@ -4,15 +4,22 @@
  * Hides API keys server-side, handles CORS, manages timbus.vn session cookies.
  *
  * Endpoints (reverse-engineered from timbus.vn HAR + APK decompilation):
- *   POST /Engine/Business/Search/action.ashx?act=searchfull&typ=1&key=<query>  - search routes
- *   POST /Engine/Business/Search/action.ashx?act=fleetdetail&fid=<id>           - route detail + geometry
- *   POST /Engine/Business/Vehicle/action.ashx?act=partremained                  - vehicle ETA at station
+ *   GET /fleets.aspx                                    - All routes HTML listing
+ *   POST /Engine/Business/Search/action.ashx?act=fleetdetail&fid=<id>   - route detail + geometry
+ *   POST /Engine/Business/Vehicle/action.ashx?act=partremained          - vehicle ETA at station
+ *   POST /Engine/Business/Search/action.ashx?act=searchfull             - search routes
  */
 
 // ---- Config ----
 const FREEROUTE_API_KEY = 'fro_80bfff714e74d8e8e56588a544113339e40f657011771cb54d4fe32c99010d11';
 
 const TIMBUS_HEADERS = {
+  'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+  'referer': 'http://timbus.vn/'
+};
+
+const TIMBUS_API_HEADERS = {
   'accept': 'application/json, text/javascript, */*; q=0.01',
   'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
   'x-requested-with': 'XMLHttpRequest',
@@ -27,6 +34,9 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Headers': 'Content-Type, Accept'
 };
 
+// Max routes to fetch per city to avoid timeout
+const MAX_ROUTES_PER_CITY = 15;
+
 // ---- Helpers ----
 function json(data, status = 200, extra = {}) {
   return new Response(JSON.stringify(data), {
@@ -36,29 +46,29 @@ function json(data, status = 200, extra = {}) {
 }
 
 /**
- * timbus.vn session fetch: GET homepage first to get ASP.NET_SessionId cookie,
- * then POST to action.ashx with the cookie.
+ * Fetch timbus.vn homepage to establish ASP.NET_SessionId cookie
  */
-async function timbusPost(basePath, actParams) {
-  const cookieJar = {};
-
-  // Step 1: GET homepage to establish session cookie
+async function getSessionCookie() {
   const homeRes = await fetch('http://timbus.vn/', {
     headers: { 'user-agent': TIMBUS_HEADERS['user-agent'] },
     redirect: 'follow'
   });
   const setCookie = homeRes.headers.get('set-cookie') || '';
   const sessionMatch = setCookie.match(/ASP.NET_SessionId=([^;]+)/);
-  if (sessionMatch) cookieJar['ASP.NET_SessionId'] = sessionMatch[1];
+  return sessionMatch ? sessionMatch[1] : '';
+}
 
-  // Step 2: POST to action.ashx
+/**
+ * POST to timbus.vn action.ashx with session cookie
+ */
+async function timbusPost(basePath, actParams, cookie) {
   const body = Object.entries(actParams).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&');
 
   const postRes = await fetch(`http://timbus.vn${basePath}`, {
     method: 'POST',
     headers: {
-      ...TIMBUS_HEADERS,
-      'cookie': Object.entries(cookieJar).map(([k, v]) => `${k}=${v}`).join('; '),
+      ...TIMBUS_API_HEADERS,
+      'cookie': `ASP.NET_SessionId=${cookie}`,
       'content-length': String(body.length)
     },
     body
@@ -71,6 +81,32 @@ async function timbusPost(basePath, actParams) {
   } catch (e) {
     return { _raw_text: text };
   }
+}
+
+/**
+ * Fetch fleets.aspx HTML and extract all route IDs
+ */
+async function getAllRouteIds(cookie) {
+  const res = await fetch('http://timbus.vn/fleets.aspx', {
+    headers: { 'user-agent': TIMBUS_HEADERS['user-agent'], 'cookie': `ASP.NET_SessionId=${cookie}` },
+    redirect: 'follow'
+  });
+  if (!res.ok) return [];
+
+  const html = await res.text();
+
+  // Extract route IDs from fleed-hide-show-XXX patterns
+  const routeIdMatches = [...html.matchAll(/fleed-hide-show-(\d+)/g)];
+  const ids = [...new Set(routeIdMatches.map(m => m[1]))];
+
+  // Also try to extract route numbers and names from the HTML
+  const routeNames = {};
+  const nameMatches = [...html.matchAll(/Tuyến\s*\[(\d+)\]\s*([^<]+)/g)];
+  for (const m of nameMatches) {
+    routeNames[m[1]] = m[2].trim();
+  }
+
+  return { ids, routeNames };
 }
 
 /** Parse "RouteNumber - StartStation - EndStation" from timbus.vn Name field */
@@ -96,16 +132,14 @@ function geoToStops(geo) {
 
 /**
  * Get real-time vehicle positions at a station.
- * act=partremained&State=true&StationID=<id>&FleetOver=
- * Returns buses approaching/at that station with ETA.
  */
-async function getVehiclesAtStation(stationId) {
+async function getVehiclesAtStation(cookie, stationId) {
   const result = await timbusPost('/Engine/Business/Vehicle/action.ashx', {
     act: 'partremained',
     State: 'true',
     StationID: String(stationId),
     FleetOver: ''
-  });
+  }, cookie);
   return result;
 }
 
@@ -120,7 +154,6 @@ function formatETA(seconds) {
 
 /**
  * Create simulated buses spaced along a route's geometry.
- * Distributes busCount buses evenly along the Go.Geo path.
  */
 function createSimulatedBuses(stops, routeId, routeNumber, busCount = 3) {
   if (!stops || stops.length === 0) return [];
@@ -173,108 +206,73 @@ export default {
     // ---- Bus data: /api/buses?city=hcmc|hanoi ----
     if (path === '/api/buses' || path === '/api/buses/') {
       const city = (url.searchParams.get('city') || 'hcmc').toLowerCase();
-      const searchKey = city === 'hcmc' ? '60B' : '01';
+      const cookie = await getSessionCookie();
 
-      const timbus = await timbusPost('/Engine/Business/Search/action.ashx', {
-        act: 'searchfull',
-        typ: '1',
-        key: searchKey
-      });
+      // Step 1: Get all route IDs from fleets.aspx
+      const { ids: routeIds, routeNames } = await getAllRouteIds(cookie);
+
+      if (routeIds.length === 0) {
+        // Fallback to searchfull if fleets.aspx doesn't work
+        const searchKey = city === 'hcmc' ? '60B' : '01';
+        const timbus = await timbusPost('/Engine/Business/Search/action.ashx', {
+          act: 'searchfull',
+          typ: '1',
+          key: searchKey
+        }, cookie);
+        return processRoutes(timbus, city, cookie);
+      }
+
+      // Limit routes to avoid timeout
+      const limitedIds = routeIds.slice(0, MAX_ROUTES_PER_CITY);
+
+      // Fetch route details for each ID
       const routes = [];
-
-      if (timbus && timbus.success && timbus.dt && Array.isArray(timbus.dt.Data)) {
-        for (const item of timbus.dt.Data) {
-          const parsed = parseRouteName(item.Name);
+      for (const routeId of limitedIds) {
+        try {
           const fleet = await timbusPost('/Engine/Business/Search/action.ashx', {
             act: 'fleetdetail',
-            fid: item.ObjectID
-          });
-          let stops = [];
-          let stationIds = [];
-          let buses = [];
-          let busCount = 3; // default simulated bus count
+            fid: routeId
+          }, cookie);
 
-          if (fleet && fleet.success && fleet.dt) {
-            const fd = fleet.dt;
+          if (!fleet || !fleet.success || !fleet.dt) continue;
 
-            // ALWAYS use ALL Go.Geo points as stops (full route geometry)
-            stops = geoToStops(fd.Go?.Geo || []);
+          const fd = fleet.dt;
+          const parsed = parseRouteName(fd.Name || routeNames[routeId] || `Tuyến ${routeId}`);
 
-            // Use station list for names + ObjectIDs (for vehicle queries)
-            // Merge station names onto geo stops where possible
-            if (fd.Station && Array.isArray(fd.Station)) {
-              stationIds = fd.Station.filter(s => s.ObjectID).map(s => s.ObjectID);
-              // Overlay station names onto geo stops by matching index
-              stops = stops.map((s, i) => {
-                const station = fd.Station[i];
-                return {
-                  name: station?.Name || s.name,
-                  lat: station?.Geo?.Lat || s.lat,
-                  lng: station?.Geo?.Lng || s.lng,
-                  seq: s.seq
-                };
-              });
-            }
+          // Use ALL Go.Geo points as stops
+          const stops = geoToStops(fd.Go?.Geo || []);
 
-            busCount = fd.BusCount || 3;
-
-            // Get real-time vehicle positions from first 5 stations (increased from 3)
-            for (const sid of stationIds.slice(0, 5)) {
-              try {
-                const vr = await getVehiclesAtStation(sid);
-                if (vr && vr.success) {
-                  const vdata = vr.dt || vr.data || vr;
-                  if (Array.isArray(vdata)) {
-                    for (const v of vdata) {
-                      const plate = v.BienKiemSoat || v.LicensePlate || '';
-                      const fleetCode = v.FleetCode || v.Fleet || '';
-                      const etaSeconds = v.TimeRemained || v.PartRemained || 0;
-                      const speed = v.Speed || 0;
-
-                      // Use the station where the vehicle was detected as its position
-                      const station = fd.Station.find(s => s.ObjectID == sid);
-                      buses.push({
-                        id: plate || `real-${Math.random()}`,
-                        routeId: item.FleedCode || item.ObjectID,
-                        lat: station?.Geo?.Lat || 0,
-                        lng: station?.Geo?.Lng || 0,
-                        heading: 0,
-                        nextStop: station?.Name || (stops[1]?.name || ''),
-                        eta: formatETA(etaSeconds),
-                        updatedAt: new Date().toISOString(),
-                        vehicleNumber: plate,
-                        speed,
-                        fleetCode,
-                        timeRemainedSeconds: etaSeconds,
-                        realTime: true
-                      });
-                    }
-                  }
-                }
-              } catch (e) {
-                // skip failed station queries
-              }
-              // Small delay between requests
-              await new Promise(r => setTimeout(r, 200));
-            }
+          // Merge station names
+          let stations = stops;
+          if (fd.Station && Array.isArray(fd.Station)) {
+            stations = stops.map((s, i) => {
+              const station = fd.Station[i];
+              return {
+                name: station?.Name || s.name,
+                lat: station?.Geo?.Lat || s.lat,
+                lng: station?.Geo?.Lng || s.lng,
+                seq: s.seq
+              };
+            });
           }
 
-          // If no real vehicles found, create simulated buses along the route
-          if (buses.length === 0 && stops.length > 0) {
-            buses = createSimulatedBuses(stops, item.ObjectID, parsed.number, busCount);
-          }
+          // Create simulated buses along route
+          const buses = createSimulatedBuses(stops, routeId, parsed.number, fd.BusCount || 3);
 
           routes.push({
-            id: `timbus-${item.ObjectID}`,
-            number: item.FleedCode || parsed.number,
-            name: item.Name || `Tuyến timbus ${item.ObjectID}`,
-            startStation: parsed.startStation,
-            endStation: parsed.endStation,
+            id: `timbus-${routeId}`,
+            number: fd.Code || parsed.number,
+            name: fd.Name || `Tuyến ${routeId}`,
+            startStation: fd.FirstStation || parsed.startStation,
+            endStation: fd.LastStation || parsed.endStation,
             color: '#1976d2',
-            stops,
+            stops: stations,
             buses,
-            busCount
+            busCount: fd.BusCount || 3
           });
+        } catch (e) {
+          // skip failed routes
+          continue;
         }
       }
 
@@ -294,17 +292,19 @@ export default {
         cityName: city === 'hcmc' ? 'Ho Chi Minh City' : 'Hanoi',
         updatedAt: new Date().toISOString(),
         routes,
-        source: 'live'
+        source: 'live',
+        routeCount: routes.length
       });
     }
 
     // ---- Route detail: /api/route/:id ----
     if (path.startsWith('/api/route/')) {
       const id = path.split('/').pop();
+      const cookie = await getSessionCookie();
       const fleet = await timbusPost('/Engine/Business/Search/action.ashx', {
         act: 'fleetdetail',
         fid: id
-      });
+      }, cookie);
 
       if (!fleet || !fleet.success || !fleet.dt) {
         return json({ error: 'Route not found' }, 404);
@@ -317,7 +317,7 @@ export default {
       const stops = geoToStops(fd.Go?.Geo || []);
 
       // Merge station names
-      let stations = [];
+      let stations = stops;
       if (fd.Station && Array.isArray(fd.Station)) {
         stations = stops.map((s, i) => {
           const station = fd.Station[i];
@@ -341,13 +341,13 @@ export default {
         }));
       }
 
-      // Get vehicle positions for this route's stations (more stations)
+      // Get vehicle positions for this route's stations
       let buses = [];
       if (fd.Station && Array.isArray(fd.Station)) {
         const stationIds = fd.Station.filter(s => s.ObjectID).map(s => s.ObjectID);
         for (const sid of stationIds.slice(0, 5)) {
           try {
-            const vr = await getVehiclesAtStation(sid);
+            const vr = await getVehiclesAtStation(cookie, sid);
             if (vr && vr.success) {
               const vdata = vr.dt || vr.data || vr;
               if (Array.isArray(vdata)) {
@@ -377,7 +377,7 @@ export default {
         }
       }
 
-      // If no real vehicles, create simulated buses along route
+      // If no real vehicles, create simulated buses
       if (buses.length === 0 && stops.length > 0) {
         buses = createSimulatedBuses(stops, fd.FleetID || id, parsed.number, fd.BusCount || 3);
         buses = buses.map(b => ({ ...b, simulated: true }));
