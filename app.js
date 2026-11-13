@@ -16,7 +16,9 @@
     stopMarkers: [],
     data: null,
     refreshTimer: null,
-    isSidebarOpen: false
+    isSidebarOpen: false,
+    visibleRouteIds: new Set(), // track which routes are visible on map
+    hiddenRoutes: new Set()     // routes user has hidden
   };
 
   // ---------- DOM ----------
@@ -53,7 +55,10 @@
     els.cityHCMC.addEventListener('click', () => switchCity('hcmc'));
     els.cityHanoi.addEventListener('click', () => switchCity('hanoi'));
 
-    els.routeSearch.addEventListener('input', (e) => renderList(e.target.value));
+    els.routeSearch.addEventListener('input', (e) => {
+      renderList(e.target.value);
+      updateMapVisibility(e.target.value);
+    });
 
     els.btnRefresh.addEventListener('click', () => {
       els.btnRefresh.textContent = '🔄 Đang tải...';
@@ -83,12 +88,16 @@
     state.layerGroup = L.layerGroup().addTo(state.map);
   }
 
-  function fitMapToRoutes() {
+  function fitMapToVisible() {
     if (!state.data || !state.data.routes) return;
     const group = L.featureGroup();
-    state.polylines.forEach((pl) => group.addLayer(pl));
-    state.markers.forEach((m) => group.addLayer(m));
-    state.stopMarkers.forEach((m) => group.addLayer(m));
+    // Only add visible routes' polylines and markers
+    state.data.routes.forEach((route) => {
+      if (state.hiddenRoutes.has(route.id)) return;
+      state.polylines.forEach((pl) => { if (pl.options.routeId === route.id) group.addLayer(pl); });
+      state.markers.forEach((m) => { if (m.options.routeId === route.id) group.addLayer(m); });
+      state.stopMarkers.forEach((m) => { if (m.options.routeId === route.id) group.addLayer(m); });
+    });
     if (group.getLayers().length > 0) {
       state.map.fitBounds(group.getBounds().pad(0.15));
     } else {
@@ -103,11 +112,29 @@
     state.stopMarkers = [];
   }
 
-  function renderMap() {
+  function updateMapVisibility(filter = '') {
+    const term = filter.toLowerCase();
+    state.data.routes.forEach((route) => {
+      const matches = !term ||
+        route.number.toLowerCase().includes(term) ||
+        route.startStation.toLowerCase().includes(term) ||
+        route.endStation.toLowerCase().includes(term);
+      if (matches) {
+        state.hiddenRoutes.delete(route.id);
+      } else {
+        state.hiddenRoutes.add(route.id);
+      }
+    });
+    redrawMap();
+  }
+
+  function redrawMap() {
     clearMap();
     if (!state.data || !state.data.routes) return;
 
     state.data.routes.forEach((route) => {
+      if (state.hiddenRoutes.has(route.id)) return;
+
       // Route polyline from ALL stops
       const latlngs = route.stops.filter(s => s.lat && s.lng).map(s => [s.lat, s.lng]);
       if (latlngs.length > 1) {
@@ -116,52 +143,64 @@
           weight: 4,
           opacity: 0.8,
           className: 'route-line'
-        }).addTo(state.layerGroup);
+        });
+        polyline.options.routeId = route.id;
+        polyline.addTo(state.layerGroup);
         state.polylines.push(polyline);
       }
 
-      // Start & end station markers (larger, with letters)
+      // Start station marker (green A)
       const start = route.stops[0];
-      const end = route.stops[route.stops.length - 1];
-
       if (start && start.lat && start.lng) {
-        L.marker([start.lat, start.lng], {
+        const m = L.marker([start.lat, start.lng], {
           title: `ĐẦU: ${start.name}`,
           icon: L.divIcon({
             className: 'station-marker start-marker',
-            html: `<div style="background:${route.color};color:#fff;border-radius:50%;width:18px;height:18px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:bold;border:2px solid #fff;box-shadow:0 2px 4px rgba(0,0,0,0.5);">A</div>`,
+            html: `<div style="background:#4caf50;color:#fff;border-radius:50%;width:18px;height:18px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:bold;border:2px solid #fff;box-shadow:0 2px 4px rgba(0,0,0,0.5);">A</div>`,
             iconSize: [18, 18],
             iconAnchor: [9, 9]
           })
-        }).addTo(state.layerGroup);
+        });
+        m.options.routeId = route.id;
+        m.addTo(state.layerGroup);
+        state.stopMarkers.push(m);
       }
 
+      // End station marker (red B)
+      const end = route.stops[route.stops.length - 1];
       if (end && end.lat && end.lng) {
-        L.marker([end.lat, end.lng], {
+        const m = L.marker([end.lat, end.lng], {
           title: `CUỐI: ${end.name}`,
           icon: L.divIcon({
             className: 'station-marker end-marker',
-            html: `<div style="background:${route.color};color:#fff;border-radius:50%;width:18px;height:18px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:bold;border:2px solid #fff;box-shadow:0 2px 4px rgba(0,0,0,0.5);">B</div>`,
+            html: `<div style="background:#f44336;color:#fff;border-radius:50%;width:18px;height:18px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:bold;border:2px solid #fff;box-shadow:0 2px 4px rgba(0,0,0,0.5);">B</div>`,
             iconSize: [18, 18],
             iconAnchor: [9, 9]
           })
-        }).addTo(state.layerGroup);
+        });
+        m.options.routeId = route.id;
+        m.addTo(state.layerGroup);
+        state.stopMarkers.push(m);
       }
 
       // Intermediate stop markers (small dots for ALL stops)
       route.stops.forEach((stop, i) => {
-        if (i === 0 || i === route.stops.length - 1) return; // skip start/end (already marked)
+        if (i === 0 || i === route.stops.length - 1) return;
         if (!stop.lat || !stop.lng) return;
-        L.circleMarker([stop.lat, stop.lng], {
+        const m = L.circleMarker([stop.lat, stop.lng], {
           radius: 3,
           color: route.color,
           fillColor: '#fff',
           fillOpacity: 0.8,
           weight: 2
-        }).bindTooltip(`${stop.seq}. ${stop.name}`, { direction: 'top', offset: [0, -5] }).addTo(state.layerGroup);
+        });
+        m.bindTooltip(`${stop.seq}. ${stop.name}`, { direction: 'top', offset: [0, -5] });
+        m.options.routeId = route.id;
+        m.addTo(state.layerGroup);
+        state.stopMarkers.push(m);
       });
 
-      // ALL bus markers
+      // ALL bus markers - moving on map based on data
       (route.buses || []).forEach((bus) => {
         if (!bus.lat || !bus.lng) return;
         const isSimulated = bus.simulated;
@@ -173,8 +212,8 @@
             iconSize: [22, 22],
             iconAnchor: [11, 11]
           })
-        }).addTo(state.layerGroup);
-
+        });
+        marker.options.routeId = route.id;
         marker.bindPopup(`
           <div class="popup-title">Tuyến ${route.number}</div>
           <div class="popup-stations">${route.startStation} <span class="arrow">→</span> ${route.endStation}</div>
@@ -184,12 +223,11 @@
           <div class="popup-updated">Cập nhật: ${new Date(bus.updatedAt).toLocaleTimeString('vi-VN')}</div>
           <div style="font-size:11px;color:${isSimulated ? '#ff9800' : '#1a73e8'}">${isSimulated ? 'Mô phỏng' : 'Thực tế'}</div>
         `);
-
         state.markers.push(marker);
       });
     });
 
-    fitMapToRoutes();
+    fitMapToVisible();
     els.mapInfo.textContent = `${state.data.cityName} — ${state.data.routes.length} tuyến`;
   }
 
@@ -220,8 +258,8 @@
     els.dataSource.style.color = state.data.source === 'live' ? '#4caf50' : '#ff9800';
     els.lastUpdated.textContent = `Cập nhật: ${new Date().toLocaleTimeString('vi-VN')}`;
 
-    renderMap();
     renderList(els.routeSearch.value);
+    redrawMap();
   }
 
   function loadCity(city) {
@@ -231,6 +269,9 @@
     els.citySubtitle.textContent = 'Dữ liệu trực tiếp từ timbus.vn';
     els.cityHCMC.classList.toggle('active', city === 'hcmc');
     els.cityHanoi.classList.toggle('active', city === 'hanoi');
+
+    // Reset hidden routes when switching city
+    state.hiddenRoutes = new Set();
 
     if (state.map) {
       state.map.setView(cfg.center, cfg.zoom);
@@ -266,12 +307,14 @@
     }
 
     routes.forEach((route) => {
-      const li = document.createElement('li');
-      li.className = 'route-item';
+      const isHidden = state.hiddenRoutes.has(route.id);
       const bus = (route.buses && route.buses[0]) || {};
+      const li = document.createElement('li');
+      li.className = `route-item ${isHidden ? 'hidden-route' : ''}`;
+      li.style.display = isHidden ? 'none' : '';
 
       li.innerHTML = `
-        <div class="route-header" onclick="this.parentElement.querySelector('.route-body').classList.toggle('show')">
+        <div class="route-header" onclick="toggleRoute('${route.id}', this)">
           <div>
             <span class="route-number">${route.number}</span>
             <span class="route-name">${route.name}</span>
@@ -281,9 +324,10 @@
               <span>${route.endStation}</span>
             </div>
           </div>
-          <span class="route-expand">▾</span>
+          <span class="route-expand">${isHidden ? '▸' : '▾'}</span>
+          <span class="bus-count-badge">${route.buses.length} xe</span>
         </div>
-        <div class="route-body">
+        <div class="route-body${isHidden ? '' : ' show'}">
           <div class="bus-row">
             <div class="bus-info">
               <div class="bus-id">Xe ${bus.id || '—'}</div>
@@ -293,12 +337,23 @@
             <div class="bus-status">${bus.eta ? 'Đang chạy' : 'Lên lịch'}</div>
           </div>
           <div style="margin-top:6px; font-size:11px; color:#666;">${route.stops.map(s => s.name).join(' → ')}</div>
-          <div style="margin-top:4px; font-size:11px; color:#999;">Tổng số xe: ${route.busCount || route.buses.length}</div>
+          <div style="margin-top:4px; font-size:11px; color:#999;">Tổng số xe: ${route.busCount || route.buses.length} | Dừng: ${route.stops.length} trạm</div>
         </div>
       `;
       els.busList.appendChild(li);
     });
   }
+
+  // Toggle route visibility on map and list
+  window.toggleRoute = function(routeId, headerEl) {
+    if (state.hiddenRoutes.has(routeId)) {
+      state.hiddenRoutes.delete(routeId);
+    } else {
+      state.hiddenRoutes.add(routeId);
+    }
+    renderList(els.routeSearch.value);
+    redrawMap();
+  };
 
   // ---------- Auto refresh ----------
   function startAutoRefresh() {

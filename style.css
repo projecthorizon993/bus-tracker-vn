@@ -37,6 +37,7 @@ body {
   padding: 16px;
   background: #1a73e8;
   color: #fff;
+  flex-shrink: 0;
 }
 
 .sidebar-header h2 { font-size: 18px; margin-bottom: 6px; }
@@ -46,6 +47,7 @@ body {
   display: flex;
   gap: 6px;
   margin-bottom: 12px;
+  flex-shrink: 0;
 }
 
 .city-toggle button {
@@ -66,6 +68,7 @@ body {
 
 .search-box {
   margin-bottom: 12px;
+  flex-shrink: 0;
 }
 
 .search-box input {
@@ -81,6 +84,7 @@ body {
   gap: 6px;
   margin-bottom: 12px;
   align-items: center;
+  flex-shrink: 0;
 }
 
 .refresh-bar button {
@@ -100,7 +104,13 @@ body {
   color: #888;
 }
 
-.bus-list { list-style: none; }
+.scrollable-content {
+  flex: 1;
+  overflow-y: auto;
+  padding-bottom: 12px;
+}
+
+.bus-list { list-style: none; padding: 0; }
 
 .route-item {
   border: 1px solid #e0e0e0;
@@ -108,12 +118,20 @@ body {
   margin-bottom: 8px;
   overflow: hidden;
   background: #fff;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.route-item:hover { background: #f5f5f5; }
+
+.route-item.selected {
+  background: #e3f2fd;
+  border-color: #1a73e8;
 }
 
 .route-header {
   padding: 10px 12px;
   background: #fafafa;
-  cursor: pointer;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -156,6 +174,18 @@ body {
 
 .bus-id { font-weight: 600; color: #555; }
 .bus-eta { font-size: 12px; color: #666; }
+
+.bus-type-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  margin-left: 6px;
+}
+
+.bus-type-badge.simulated { background: #fff3e0; color: #e65100; }
+.bus-type-badge.realtime { background: #e8f5e9; color: #2e7d32; }
 
 .bus-status {
   padding: 4px 8px;
@@ -214,7 +244,7 @@ body {
 .popup-updated { font-size: 10px; color: #999; }
 
 /* Stop markers on map */
-.leaflet-tooltip { background: #fff; border: 1px solid #999; border-radius: 4px; padding: 4px 8px; font-size: 11px; }
+.leaflet-tooltip { background: #fff; border: 1px solid #999; border-radius: 4px; padding: 4px 8px; font-size: 11px; white-space: nowrap; }
 
 .start-marker, .end-marker { z-index-offset: 1000; }
 
