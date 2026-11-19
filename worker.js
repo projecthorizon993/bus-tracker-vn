@@ -220,7 +220,7 @@ async function processRouteData(fd, routeId, cookie) {
   }
 
   if (buses.length === 0 && stops.length > 0) {
-    buses = createSimulatedBuses(stops, routeId, parsed.number, fd.BusCount || 3);
+    buses = createSimulatedBuses(stops, routeId, parsed.number, 4);
     buses = buses.map(b => ({ ...b, simulated: true }));
   }
 
@@ -334,7 +334,7 @@ export default {
         }
       }
       if (buses.length === 0 && stops.length > 0) {
-        buses = createSimulatedBuses(stops, fd.FleetID || id, parsed.number, fd.BusCount || 3);
+        buses = createSimulatedBuses(stops, fd.FleetID || id, parsed.number, 4);
         buses = buses.map(b => ({ ...b, simulated: true }));
       }
       return json({
