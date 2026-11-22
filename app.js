@@ -105,7 +105,7 @@
       updateWidgetUrl();
     });
 
-    // API key
+    // API key (optional)
     els.btnSetApiKey.addEventListener('click', () => {
       const key = els.apiKeyInput.value.trim();
       if (key) {
@@ -144,9 +144,8 @@
   }
 
   function updateWidgetUrl() {
-    if (!state.apiKey) return;
     const cityCfg = CONFIG.CITIES[state.city];
-    const url = `https://busmaps.com/en/maps?lat=${cityCfg.center[0]}&lng=${cityCfg.center[1]}&zoom=${cityCfg.zoom}&key=${state.apiKey}`;
+    const url = `https://busmaps.com/en/maps?lat=${cityCfg.center[0]}&lng=${cityCfg.center[1]}&zoom=${cityCfg.zoom}`;
     els.busmapsIframe.src = url;
   }
 
