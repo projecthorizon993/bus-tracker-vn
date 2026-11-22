@@ -1,13 +1,13 @@
 # Bus Tracker VN
 
-Web app to track buses in **Ho Chi Minh City** and **Hanoi**, Vietnam, using **timbus.vn** for live bus data and **FreeRoute** for map tiles.
+Web app to track buses in **Ho Chi Minh City** and **Hanoi**, Vietnam, using **BusMaps API** for live bus data and **FreeRoute** for map tiles.
 
 ## Architecture
 
 ```
-GitHub Pages (Frontend) ──→ Cloudflare Worker (Backend) ──→ timbus.vn + FreeRoute
+GitHub Pages (Frontend) ──→ Cloudflare Worker (Backend) ──→ BusMaps API + FreeRoute
                                 │                              │
-                                └─ Hides API keys              └─ Real bus data
+                                └─ Hides API keys                └─ Real-time vehicle positions
                                 └─ Handles CORS                └─ Map tiles
 ```
 
@@ -81,13 +81,16 @@ Open: `https://yourusername.github.io/bus-tracker-vn/`
 
 ## Data Source
 
-- **Bus routes & positions:** [timbus.vn](http://timbus.vn) (live data from Vietnam)
-- **Map tiles:** FreeRoute (your API key) with OpenStreetMap fallback
-- **FreeRoute API key:** `fro_80bfff714e74d8e8e56588a544113339e40f657011771cb54d4fe32c99010d11` (hidden in Worker)
+| Component | Source |
+|-----------|--------|
+| Bus routes & positions | [BusMaps API](https://busmaps.com) (live data) |
+| Map tiles | FreeRoute (your API key) with OpenStreetMap fallback |
+| FreeRoute API key | `fro_80bfff714e74d8e8e56588a544113339e40f657011771cb54d4fe32c99010d11` (hidden in Worker) |
+| BusMaps API key | Get free key at [busmaps.com/en/developers](https://busmaps.com/en/developers) |
 
 ## Features
 
-- ✅ Live bus data from timbus.vn (Hanoi + HCMC)
+- ✅ Live bus data from BusMaps API (Ho Chi Minh City + Hanoi)
 - ✅ Start station → End station for every route
 - ✅ FreeRoute map with your API key
 - ✅ Colored route polylines
@@ -95,11 +98,18 @@ Open: `https://yourusername.github.io/bus-tracker-vn/`
 - ✅ Bus list sidebar with search & filter
 - ✅ Auto-refresh every 30 seconds
 - ✅ Mobile-responsive sidebar
+- ✅ **BusMaps Widget** - Alternative view with official BusMaps widget (add your API key)
 - ✅ No API keys exposed in frontend
+
+## How to use BusMaps Widget
+
+1. Get a free API key at [https://busmaps.com/en/developers](https://busmaps.com/en/developers)
+2. Open the app and paste your key in the sidebar API key input
+3. Click "FreeRoute Widget" tab to switch to the BusMaps widget view
+4. The widget shows interactive transit routing for 80,000+ cities in 90+ countries
 
 ## Next Steps
 
 - Add GitHub Actions workflow for auto-deploy to Pages
 - Add route detail page (`/api/route/:id`)
 - Add real-time bus position polling with WebSocket or longer polling
-- Add HCMC fleetdetail endpoints if timbus.vn supports them
