@@ -4,14 +4,24 @@
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   height: 100vh;
-  display: flex;
+  position: relative;
   overflow: hidden;
 }
 
 #map {
-  flex: 1;
-  height: 100vh;
-  width: 100%;
+  position: absolute;
+  top: 0;
+  left: 300px;
+  right: 0;
+  bottom: 0;
+}
+
+#busmaps-widget {
+  position: absolute;
+  top: 0;
+  left: 300px;
+  right: 0;
+  bottom: 0;
 }
 
 /* Compact Sidebar */
