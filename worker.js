@@ -174,16 +174,45 @@ function createSimulatedBuses(stops, routeId, routeNumber, busCount = 3) {
 
 async function processRouteData(fd, routeId, cookie) {
   const parsed = parseRouteName(fd.Name || `Tuyến ${routeId}`);
-  const stops = geoToStops(fd.Go?.Geo || []);
-  const pathDist = pathWithDistances(fd.Go?.Geo?.map(p => ({ lat: p.Lat, lng: p.Lng })) || []);
-  const totalDistance = pathDist.length > 0 ? pathDist[pathDist.length-1].dist : 0;
+  const geoPoints = fd.Go?.Geo || [];
 
-  let stationIds = [];
+  // Build station lookup map from fd.Station (real station data with names and lat/lng)
+  const stationMap = {};
   if (fd.Station && Array.isArray(fd.Station)) {
-    stationIds = fd.Station.filter(s => s.ObjectID).map(s => s.ObjectID);
+    fd.Station.forEach(s => {
+      if (s.ObjectID) {
+        stationMap[s.ObjectID] = {
+          id: s.ObjectID,
+          code: s.Code,
+          name: s.Name,
+          lat: s.Geo?.Lat || 0,
+          lng: s.Geo?.Lng || 0
+        };
+      }
+    });
   }
 
+  // Build stops array: use station names when available, fall back to geo points
+  let stops = [];
+  if (geoPoints.length > 0) {
+    stops = geoPoints.map((p, i) => {
+      const station = fd.Station?.[i];
+      return {
+        name: station?.Name || p.Name || `Điểm ${i + 1}`,
+        lat: station?.Geo?.Lat || p.Lat || 0,
+        lng: station?.Geo?.Lng || p.Lng || 0,
+        seq: i + 1
+      };
+    });
+  }
+
+  const pathDist = pathWithDistances(geoPoints.map(p => ({ lat: p.Lat, lng: p.Lng })));
+  const totalDistance = pathDist.length > 0 ? pathDist[pathDist.length-1].dist : 0;
+
   let buses = [];
+  let stationIds = fd.Station?.filter(s => s.ObjectID).map(s => s.ObjectID) || [];
+
+  // Get real-time vehicle positions from stations
   for (const sid of stationIds.slice(0, 5)) {
     try {
       const vr = await getVehiclesAtStation(cookie, sid);
@@ -193,21 +222,16 @@ async function processRouteData(fd, routeId, cookie) {
           for (const v of vdata) {
             const plate = v.BienKiemSoat || v.LicensePlate || '';
             const etaSeconds = v.TimeRemained || v.PartRemained || 0;
-            let busLat, busLng;
-            if (v.PartRemained && totalDistance > 0) {
-              const distFromStart = Math.max(0, totalDistance - v.PartRemained);
-              const pos = pointAtDistance(pathDist, distFromStart);
-              busLat = pos.lat; busLng = pos.lng;
-            } else {
-              const station = fd.Station.find(s => s.ObjectID == sid);
-              busLat = station?.Geo?.Lat || 0; busLng = station?.Geo?.Lng || 0;
-            }
+            const speed = v.Speed || 0;
+
+            // Place bus at the station's actual coordinates from fd.Station
+            const station = stationMap[sid];
             buses.push({
               id: plate || `bus-${Math.random()}`, routeId: fd.Code || routeId,
-              lat: busLat, lng: busLng, heading: 0,
-              nextStop: fd.LastStation || parsed.endStation,
+              lat: station?.lat || 0, lng: station?.lng || 0, heading: 0,
+              nextStop: station?.name || fd.LastStation || parsed.endStation,
               eta: formatETA(etaSeconds), updatedAt: new Date().toISOString(),
-              vehicleNumber: plate, speed: v.Speed || 0,
+              vehicleNumber: plate, speed,
               fleetCode: v.FleetCode || v.Fleet || '',
               timeRemainedSeconds: etaSeconds, distanceRemaining: v.PartRemained || 0,
               realTime: true
@@ -219,6 +243,7 @@ async function processRouteData(fd, routeId, cookie) {
     await new Promise(r => setTimeout(r, 200));
   }
 
+  // If no real vehicles found, create exactly 4 simulated buses positioned at real station locations
   if (buses.length === 0 && stops.length > 0) {
     buses = createSimulatedBuses(stops, routeId, parsed.number, 4);
     buses = buses.map(b => ({ ...b, simulated: true }));
@@ -287,7 +312,32 @@ export default {
       if (!fleet || !fleet.success || !fleet.dt) return json({ error: 'Route not found' }, 404);
       const fd = fleet.dt;
       const parsed = parseRouteName(fd.Name);
-      const stops = geoToStops(fd.Go?.Geo || []);
+      const geoPoints = fd.Go?.Geo || [];
+      const stops = geoPoints.map((p, i) => {
+        const station = fd.Station?.[i];
+        return {
+          name: station?.Name || p.Name || `Điểm ${i + 1}`,
+          lat: station?.Geo?.Lat || p.Lat || 0,
+          lng: station?.Geo?.Lng || p.Lng || 0,
+          seq: i + 1
+        };
+      });
+      const pathDist = pathWithDistances(fd.Go?.Geo?.map(p => ({ lat: p.Lat, lng: p.Lng })) || []);
+      const totalDistance = pathDist.length > 0 ? pathDist[pathDist.length-1].dist : 0;
+
+      // Build station lookup map from fd.Station
+      const stationMap = {};
+      if (fd.Station && Array.isArray(fd.Station)) {
+        fd.Station.forEach(s => {
+          if (s.ObjectID) {
+            stationMap[s.ObjectID] = {
+              id: s.ObjectID, code: s.Code, name: s.Name,
+              lat: s.Geo?.Lat || 0, lng: s.Geo?.Lng || 0
+            };
+          }
+        });
+      }
+
       let stations = stops;
       if (fd.Station && Array.isArray(fd.Station)) {
         stations = stops.map((s, i) => {
@@ -308,19 +358,19 @@ export default {
               const vdata = vr.dt || vr.data || vr;
               if (Array.isArray(vdata)) {
                 for (const v of vdata) {
-                  const station = fd.Station.find(s => s.ObjectID == sid);
+                  const station = stationMap[sid];
                   let busLat, busLng;
-                  if (v.PartRemained && pathWithDistances(fd.Go?.Geo?.map(p => ({ lat: p.Lat, lng: p.Lng })) || []).length > 0) {
-                    const pathDist = pathWithDistances(fd.Go?.Geo?.map(p => ({ lat: p.Lat, lng: p.Lng })) || []);
-                    const distFromStart = Math.max(0, pathDist[pathDist.length-1].dist - v.PartRemained);
+                  if (v.PartRemained && totalDistance > 0) {
+                    const distFromStart = Math.max(0, totalDistance - v.PartRemained);
                     const pos = pointAtDistance(pathDist, distFromStart);
                     busLat = pos.lat; busLng = pos.lng;
                   } else {
-                    busLat = station?.Geo?.Lat || 0; busLng = station?.Geo?.Lng || 0;
+                    busLat = station?.lat || 0; busLng = station?.lng || 0;
                   }
                   buses.push({
                     id: v.BienKiemSoat || `bus-${Math.random()}`, lat: busLat, lng: busLng, heading: 0,
-                    nextStop: station?.Name || '', eta: formatETA(v.TimeRemained || v.PartRemained || 0),
+                    nextStop: station?.name || fd.LastStation || parsed.endStation,
+                    eta: formatETA(v.TimeRemained || v.PartRemained || 0),
                     updatedAt: new Date().toISOString(), vehicleNumber: v.BienKiemSoat || '',
                     speed: v.Speed || 0, fleetCode: v.FleetCode || v.Fleet || '',
                     timeRemainedSeconds: v.TimeRemained || v.PartRemained || 0,
