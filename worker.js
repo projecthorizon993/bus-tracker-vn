@@ -2,6 +2,11 @@
  * Bus Tracker VN - Cloudflare Worker
  * Backend proxy for timbus.vn bus data and FreeRoute map tiles.
  * Hides API keys server-side, handles CORS, manages timbus.vn session cookies.
+ *
+ * Endpoints (reverse-engineered from timbus.vn HAR + APK decompilation):
+ *   GET /fleets.aspx                                    - All routes HTML listing
+ *   POST /Engine/Business/Search/action.ashx?act=fleetdetail&fid=<id>   - route detail + geometry
+ *   POST /Engine/Business/Vehicle/action.ashx?act=partremained          - vehicle ETA at station
  */
 
 // ---- Config ----
@@ -91,12 +96,21 @@ async function getAllRouteIds(cookie) {
 
 function parseRouteName(name) {
   const parts = (name || '').split(' - ');
-  return { number: parts[0] || '', startStation: parts[1] || '', endStation: parts[2] || '' };
+  return {
+    number: parts[0] || '',
+    startStation: parts[1] || '',
+    endStation: parts[2] || ''
+  };
 }
 
 function geoToStops(geo) {
   if (!geo || !Array.isArray(geo)) return [];
-  return geo.map((p, i) => ({ name: p.Name || `Điểm ${i + 1}`, lat: p.Lat || 0, lng: p.Lng || 0, seq: i + 1 }));
+  return geo.map((p, i) => ({
+    name: p.Name || `Điểm ${i + 1}`,
+    lat: p.Lat || 0,
+    lng: p.Lng || 0,
+    seq: i + 1
+  }));
 }
 
 function pathWithDistances(points) {
@@ -141,7 +155,10 @@ function pointAtDistance(pathWithDist, distFromStart) {
 
 async function getVehiclesAtStation(cookie, stationId) {
   return timbusPost('/Engine/Business/Vehicle/action.ashx', {
-    act: 'partremained', State: 'true', StationID: String(stationId), FleetOver: ''
+    act: 'partremained',
+    State: 'true',
+    StationID: String(stationId),
+    FleetOver: ''
   }, cookie);
 }
 
@@ -149,7 +166,8 @@ function formatETA(seconds) {
   if (!seconds || seconds <= 0) return 'Lên lịch';
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
-  return m > 0 ? `${m} phút` : `${s} giây`;
+  if (m > 0) return `${m} phút`;
+  return `${s} giây`;
 }
 
 function createSimulatedBuses(stops, routeId, routeNumber, busCount = 3) {
@@ -163,7 +181,8 @@ function createSimulatedBuses(stops, routeId, routeNumber, busCount = 3) {
     const isLast = idx >= stops.length - 1;
     buses.push({
       id: `sim-${routeId}-${i}`, routeId, lat: stop.lat, lng: stop.lng,
-      heading: isLast ? 0 : 90, nextStop: isLast ? stop.name : stops[idx + 1]?.name || '',
+      heading: isLast ? 0 : 90,
+      nextStop: isLast ? stop.name : stops[idx + 1]?.name || '',
       eta: isLast ? 'Đến cuối' : `${Math.max(1, (idx + 1) * 3)} phút`,
       updatedAt: new Date().toISOString(), vehicleNumber: `Xe ${i + 1}`,
       speed: isLast ? 0 : 25, simulated: true
@@ -193,26 +212,23 @@ async function processRouteData(fd, routeId, cookie) {
   }
 
   // Build stops array: use station names when available, fall back to geo points
-  let stops = [];
-  if (geoPoints.length > 0) {
-    stops = geoPoints.map((p, i) => {
-      const station = fd.Station?.[i];
-      return {
-        name: station?.Name || p.Name || `Điểm ${i + 1}`,
-        lat: station?.Geo?.Lat || p.Lat || 0,
-        lng: station?.Geo?.Lng || p.Lng || 0,
-        seq: i + 1
-      };
-    });
-  }
+  const stops = geoPoints.map((p, i) => {
+    const station = fd.Station?.[i];
+    return {
+      name: station?.Name || p.Name || `Điểm ${i + 1}`,
+      lat: station?.Geo?.Lat || p.Lat || 0,
+      lng: station?.Geo?.Lng || p.Lng || 0,
+      seq: i + 1
+    };
+  });
 
   const pathDist = pathWithDistances(geoPoints.map(p => ({ lat: p.Lat, lng: p.Lng })));
   const totalDistance = pathDist.length > 0 ? pathDist[pathDist.length-1].dist : 0;
 
   let buses = [];
-  let stationIds = fd.Station?.filter(s => s.ObjectID).map(s => s.ObjectID) || [];
+  const stationIds = fd.Station?.filter(s => s.ObjectID).map(s => s.ObjectID) || [];
 
-  // Get real-time vehicle positions from stations
+  // Get real-time vehicle positions from stations using PartRemained distance data
   for (const sid of stationIds.slice(0, 5)) {
     try {
       const vr = await getVehiclesAtStation(cookie, sid);
@@ -223,17 +239,31 @@ async function processRouteData(fd, routeId, cookie) {
             const plate = v.BienKiemSoat || v.LicensePlate || '';
             const etaSeconds = v.TimeRemained || v.PartRemained || 0;
             const speed = v.Speed || 0;
+            const partRemained = v.PartRemained || 0;
 
-            // Place bus at the station's actual coordinates from fd.Station
-            const station = stationMap[sid];
+            // Calculate bus position along route using PartRemained distance
+            // distance_from_start = totalDistance - PartRemained (distance remaining to destination)
+            let busLat, busLng;
+            if (partRemained > 0 && totalDistance > 0) {
+              const distFromStart = Math.max(0, totalDistance - partRemained);
+              const pos = pointAtDistance(pathDist, distFromStart);
+              busLat = pos.lat;
+              busLng = pos.lng;
+            } else {
+              // Fallback: place at station
+              const station = stationMap[sid];
+              busLat = station?.lat || 0;
+              busLng = station?.lng || 0;
+            }
+
             buses.push({
               id: plate || `bus-${Math.random()}`, routeId: fd.Code || routeId,
-              lat: station?.lat || 0, lng: station?.lng || 0, heading: 0,
-              nextStop: station?.name || fd.LastStation || parsed.endStation,
+              lat: busLat, lng: busLng, heading: 0,
+              nextStop: stationMap[sid]?.name || fd.LastStation || parsed.endStation,
               eta: formatETA(etaSeconds), updatedAt: new Date().toISOString(),
               vehicleNumber: plate, speed,
               fleetCode: v.FleetCode || v.Fleet || '',
-              timeRemainedSeconds: etaSeconds, distanceRemaining: v.PartRemained || 0,
+              timeRemainedSeconds: etaSeconds, distanceRemaining: partRemained,
               realTime: true
             });
           }
@@ -243,7 +273,7 @@ async function processRouteData(fd, routeId, cookie) {
     await new Promise(r => setTimeout(r, 200));
   }
 
-  // If no real vehicles found, create exactly 4 simulated buses positioned at real station locations
+  // If no real vehicles found, create exactly 4 simulated buses along route geometry
   if (buses.length === 0 && stops.length > 0) {
     buses = createSimulatedBuses(stops, routeId, parsed.number, 4);
     buses = buses.map(b => ({ ...b, simulated: true }));
@@ -261,57 +291,96 @@ async function processRouteData(fd, routeId, cookie) {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+
+    // CORS preflight
     if (request.method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: CORS_HEADERS });
     }
-    if (request.method !== 'GET') return json({ error: 'Method not allowed' }, 405);
+
+    if (request.method !== 'GET') {
+      return json({ error: 'Method not allowed' }, 405);
+    }
 
     const path = url.pathname;
 
+    // ---- Health ----
     if (path === '/api/health' || path === '/api/health/') {
       return json({ status: 'ok', service: 'bus-tracker-vn-worker', time: new Date().toISOString() });
     }
 
+    // ---- Bus data: /api/buses?city=hcmc|hanoi ----
     if (path === '/api/buses' || path === '/api/buses/') {
       const city = (url.searchParams.get('city') || 'hcmc').toLowerCase();
       const cookie = await getSessionCookie();
-      const searchKeys = city === 'hcmc' ? ['60B', '1', '4', '15', '18', '19', '2', '3', '5', '6', '7', '8', '9', '10', '11'] : ['01', '03A', '04', '05', '06A', '07', '14', '32', '44', '09', '16', '17', '18', '19', '20'];
 
+      // Step 1: Try to get all route IDs from fleets.aspx
+      const { ids: routeIds, routeNames } = await getAllRouteIds(cookie);
+
+      let searchTerms;
+      if (routeIds.length > 0) {
+        searchTerms = routeIds.map(id => ({ type: 'fleet', id }));
+      } else {
+        // Fallback: search by route number keywords
+        const searchKeys = city === 'hcmc' ? ['60B', '1', '4', '15', '18', '19', '2', '3', '5', '6', '7', '8', '9', '10', '11'] : ['01', '03A', '04', '05', '06A', '07', '14', '32', '44', '09', '16', '17', '18', '19', '20'];
+        searchTerms = searchKeys.map(key => ({ type: 'search', key }));
+      }
+
+      // Fetch route details for each route ID
       const routes = [];
-      for (const key of searchKeys.slice(0, MAX_ROUTES_PER_CITY)) {
+      for (const item of searchTerms.slice(0, MAX_ROUTES_PER_CITY)) {
         try {
-          const timbus = await timbusPost('/Engine/Business/Search/action.ashx', {
-            act: 'searchfull', typ: '1', key: key
+          const fleet = await timbusPost('/Engine/Business/Search/action.ashx', {
+            act: 'fleetdetail',
+            fid: item.id || item.key
           }, cookie);
-          if (!timbus || !timbus.success || !timbus.dt || !Array.isArray(timbus.dt.Data)) continue;
-          for (const item of timbus.dt.Data) {
-            try {
-              const fleet = await timbusPost('/Engine/Business/Search/action.ashx', {
-                act: 'fleetdetail', fid: item.ObjectID
-              }, cookie);
-              if (!fleet || !fleet.success || !fleet.dt) continue;
-              const routeData = await processRouteData(fleet.dt, item.ObjectID, cookie);
-              if (routeData) routes.push(routeData);
-            } catch (e) {}
-          }
-        } catch (e) {}
+
+          if (!fleet || !fleet.success || !fleet.dt) continue;
+
+          const routeData = await processRouteData(fleet.dt, item.id || item.key, cookie);
+          if (routeData) routes.push(routeData);
+        } catch (e) {
+          continue;
+        }
       }
 
       if (routes.length === 0) {
-        return json({ city, cityName: city === 'hcmc' ? 'Ho Chi Minh City' : 'Hanoi',
-          updatedAt: new Date().toISOString(), routes: [], source: 'mock', error: 'No data from timbus.vn' });
+        return json({
+          city,
+          cityName: city === 'hcmc' ? 'Ho Chi Minh City' : 'Hanoi',
+          updatedAt: new Date().toISOString(),
+          routes: [],
+          source: 'mock',
+          error: 'No data from timbus.vn'
+        });
       }
-      return json({ city, cityName: city === 'hcmc' ? 'Ho Chi Minh City' : 'Hanoi',
-        updatedAt: new Date().toISOString(), routes, source: 'live', routeCount: routes.length });
+
+      return json({
+        city,
+        cityName: city === 'hcmc' ? 'Ho Chi Minh City' : 'Hanoi',
+        updatedAt: new Date().toISOString(),
+        routes,
+        source: 'live',
+        routeCount: routes.length
+      });
     }
 
+    // ---- Route detail: /api/route/:id ----
     if (path.startsWith('/api/route/')) {
       const id = path.split('/').pop();
       const cookie = await getSessionCookie();
-      const fleet = await timbusPost('/Engine/Business/Search/action.ashx', { act: 'fleetdetail', fid: id }, cookie);
-      if (!fleet || !fleet.success || !fleet.dt) return json({ error: 'Route not found' }, 404);
+      const fleet = await timbusPost('/Engine/Business/Search/action.ashx', {
+        act: 'fleetdetail',
+        fid: id
+      }, cookie);
+
+      if (!fleet || !fleet.success || !fleet.dt) {
+        return json({ error: 'Route not found' }, 404);
+      }
+
       const fd = fleet.dt;
       const parsed = parseRouteName(fd.Name);
+
+      // Use ALL Go.Geo points as stops
       const geoPoints = fd.Go?.Geo || [];
       const stops = geoPoints.map((p, i) => {
         const station = fd.Station?.[i];
@@ -322,17 +391,18 @@ export default {
           seq: i + 1
         };
       });
-      const pathDist = pathWithDistances(fd.Go?.Geo?.map(p => ({ lat: p.Lat, lng: p.Lng })) || []);
-      const totalDistance = pathDist.length > 0 ? pathDist[pathDist.length-1].dist : 0;
 
-      // Build station lookup map from fd.Station
+      // Build station lookup map
       const stationMap = {};
       if (fd.Station && Array.isArray(fd.Station)) {
         fd.Station.forEach(s => {
           if (s.ObjectID) {
             stationMap[s.ObjectID] = {
-              id: s.ObjectID, code: s.Code, name: s.Name,
-              lat: s.Geo?.Lat || 0, lng: s.Geo?.Lng || 0
+              id: s.ObjectID,
+              code: s.Code,
+              name: s.Name,
+              lat: s.Geo?.Lat || 0,
+              lng: s.Geo?.Lng || 0
             };
           }
         });
@@ -348,6 +418,8 @@ export default {
       } else {
         stations = stops.map((s, i) => ({ id: null, code: null, name: s.name, lat: s.lat, lng: s.lng, seq: s.seq }));
       }
+
+      // Get vehicle positions for this route's stations
       let buses = [];
       if (fd.Station && Array.isArray(fd.Station)) {
         const stationIds = fd.Station.filter(s => s.ObjectID).map(s => s.ObjectID);
@@ -383,42 +455,61 @@ export default {
           await new Promise(r => setTimeout(r, 200));
         }
       }
+
+      // If no real vehicles, create simulated buses along route
       if (buses.length === 0 && stops.length > 0) {
         buses = createSimulatedBuses(stops, fd.FleetID || id, parsed.number, 4);
         buses = buses.map(b => ({ ...b, simulated: true }));
       }
+
       return json({
         id: fd.FleetID || id, number: fd.Code || parsed.number, name: fd.Name || `Tuyến ${id}`,
-        startStation: fd.FirstStation || parsed.startStation, endStation: fd.LastStation || parsed.endStation,
-        color: '#1976d2', routeNo: fd.Code, operationTime: fd.OperationsTime, frequency: fd.Frequency,
-        cost: fd.Cost, enterprise: fd.Enterprise, busCount: fd.BusCount || 3,
+        startStation: fd.FirstStation || parsed.startStation,
+        endStation: fd.LastStation || parsed.endStation,
+        color: '#1976d2', routeNo: fd.Code, operationTime: fd.OperationsTime,
+        frequency: fd.Frequency, cost: fd.Cost, enterprise: fd.Enterprise,
+        busCount: fd.BusCount || 3,
         stops, stations,
         routes: { go: geoToStops(fd.Go?.Geo || []), back: geoToStops(fd.Re?.Geo || []) },
         buses, updatedAt: new Date().toISOString(), source: 'live'
       });
     }
 
+    // ---- Map tile proxy: /api/map-tiles/:z/:x/:y ----
     if (path.startsWith('/api/map-tiles/')) {
       const parts = path.split('/');
-      const z = parts[3], x = parts[4], y = parts[5].replace('.png', '');
+      const z = parts[3];
+      const x = parts[4];
+      const y = parts[5].replace('.png', '');
+
       const tileUrls = [
         `https://tiles.freeroute.org/${z}/${x}/${y}.png?key=${FREEROUTE_API_KEY}`,
         `https://tile.openstreetmap.org/${z}/${x}/${y}.png`
       ];
+
       for (const tileUrl of tileUrls) {
         try {
-          const tileRes = await fetch(tileUrl, { headers: { 'User-Agent': 'BusTrackerVN/1.0' } });
+          const tileRes = await fetch(tileUrl, {
+            headers: { 'User-Agent': 'BusTrackerVN/1.0' }
+          });
           if (tileRes.ok) {
             return new Response(tileRes.body, {
               status: 200,
-              headers: { 'Content-Type': tileRes.headers.get('content-type') || 'image/png',
-                'Cache-Control': 'public, max-age=86400', 'Access-Control-Allow-Origin': '*' }
+              headers: {
+                'Content-Type': tileRes.headers.get('content-type') || 'image/png',
+                'Cache-Control': 'public, max-age=86400',
+                'Access-Control-Allow-Origin': '*'
+              }
             });
           }
-        } catch (e) { continue; }
+        } catch (e) {
+          continue;
+        }
       }
+
       return json({ error: 'Tile unavailable' }, 502);
     }
+
     return json({ error: 'Not found' }, 404);
   }
 };
