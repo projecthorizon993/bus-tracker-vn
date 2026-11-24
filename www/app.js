@@ -350,7 +350,7 @@
 
   function loadCity(city) {
     state.city = city;
-    const cfg = CITY_CONFIG[city];
+    const cfg = CONFIG.CITIES[city];
     els.cityTitle.textContent = cfg.name;
     els.citySubtitle.textContent = 'Dữ liệu trực tiếp từ BusMaps API';
     els.cityHCMC.classList.toggle('active', city === 'hcmc');
