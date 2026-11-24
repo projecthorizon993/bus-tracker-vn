@@ -27,25 +27,31 @@ jobs:
       - name: Set up Android SDK
         uses: actions/setup-android@v3
         with:
-          api-level: 33
-          target: 'android-33'
+          api-level: 34
+          target: 'android-34'
 
       - name: Install Node dependencies
         run: npm install
 
-      - name: Initialize Capacitor
-        run: npx cap init bus-tracker-vn com.bustracker.vn --web-dir www
+      - name: Accept Android SDK licenses
+        run: |
+          sdkmanager --licenses || true
 
-      - name: Add Android platform
-        run: npx cap add android
+      - name: Initialize Capacitor
+        run: |
+          npx cap init bus-tracker-vn com.bustracker.vn --web-dir www
+          npx cap add android
 
       - name: Sync Capacitor
         run: npx cap sync android
 
+      - name: Make gradlew executable
+        run: chmod +x android/gradlew
+
       - name: Build Android APK (Release)
         run: |
           cd android
-          ./gradlew assembleRelease
+          ./gradlew assembleRelease --no-daemon
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
