@@ -3,14 +3,17 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Bus Tracker VN — BusMap API</title>
+  <title>Bus Tracker VN - BusMap API</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
 
-  <!-- Sidebar toggle -->
-  <button class="sidebar-toggle" id="sidebarToggle">☰</button>
+  <!-- Header -->
+  <header id="header">
+    <h1>🚌 Bus Tracker VN</h1>
+    <div class="status-bar" id="statusBar">🔴 Đang kết nối...</div>
+  </div>
 
   <!-- Map -->
   <div id="map"></div>
@@ -19,35 +22,35 @@
   <div class="sidebar" id="sidebar">
     <div class="sidebar-header">
       <h2 id="cityTitle">Ho Chi Minh City</h2>
-      <div class="city-name" id="citySubtitle">Dữ liệu trực tiếp từ BusMap API</div>
+      <div class="city-subtitle" id="citySubtitle">Dữ liệu từ BusMap API</div>
     </div>
     <div class="sidebar-content">
-      <div class="city-toggle">
-        <button id="cityHCMC" class="active">HCMC</button>
-        <button id="cityHanoi">Hà Nội</button>
+      <!-- City Toggle -->
+      <div class="section">
+        <h3 class="section-title">🏙️ Thành phố</h3>
+        <div class="city-toggle">
+          <button id="cityHCMC" class="active">HCMC</button>
+          <button id="cityHanoi">Hà Nội</button>
+        </div>
       </div>
 
-      <div class="search-box">
-        <input type="text" id="routeSearch" placeholder="Tìm tuyến xe..." />
+      <!-- Search -->
+      <div class="section">
+        <h3 class="section-title">🔍 Tìm tuyến</h3>
+        <input type="text" id="routeSearch" placeholder="Nhập số tuyến (ví dụ: 01, 15)..." />
+      </div>
+
+      <!-- Routes List -->
+      <div class="section">
+        <h3 class="section-title">🚌 Danh sách tuyến</h3>
+        <div class="bus-list" id="busList">
+          <div class="empty-state">Tải dữ liệu...</div>
+        </div>
       </div>
 
       <div class="refresh-bar">
         <button id="btnRefresh">🔄 Làm mới</button>
-        <span id="lastUpdated" style="font-size:11px;color:#888;flex:1;text-align:right;">--</span>
-        <span id="dataSource" style="font-size:11px;color:#e91e63;flex:1;text-align:right;">⚠️ Thử kết nối API</span>
-      </div>
-
-      <div class="scrollable-content">
-        <div class="route-info" id="routeInfo" style="display:none;">
-          <div class="route-header-panel">
-            <div class="route-title" id="routeTitle"></div>
-            <div class="route-stations" id="routeStations"></div>
-            <div class="route-meta" id="routeMeta"></div>
-          </div>
-          <div class="bus-list-title" id="busListTitle">Xe buýt</div>
-          <div class="bus-list" id="busList"></div>
-        </div>
-        <div class="empty-state" id="emptyState">Chọn tuyến xe từ danh sách trên</div>
+        <span id="lastUpdated"></span>
       </div>
     </div>
   </div>

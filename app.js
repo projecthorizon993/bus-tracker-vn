@@ -1,6 +1,7 @@
 /**
- * Bus Tracker VN - Real BusMap API Client
- * Uses api-embus.busmap.vn API directly (works in Vietnam)
+ * Bus Tracker VN - Frontend Logic
+ * Calls BusMap API directly (api-embus.busmap.vn)
+ * Works from Vietnam
  */
 
 (() => {
@@ -9,10 +10,14 @@
   // ---------- Config ----------
   const BUSMAP_BASE = 'https://api-embus.busmap.vn/client/public';
 
-  // Known route IDs from BusMap app
   const CITY_ROUTE_IDS = {
-    hcmc: [1, 4, 15, 18, 19, 21, 25, 27, 33, 36],
-    hanoi: [1, 9, 14, 32, 44, 701, 771, 772, 773, 774]
+    hcmc: [1, 4, 15, 18, 19],
+    hanoi: [1, 9, 14, 32, 44]
+  };
+
+  const CITY_CONFIG = {
+    hcmc: { name: 'Ho Chi Minh City', center: [10.8231, 106.6297], zoom: 13 },
+    hanoi: { name: 'Hanoi', center: [21.0285, lng: 105.8542], zoom: 13 }
   };
 
   // ---------- State ----------
@@ -50,7 +55,8 @@
     routeMeta: document.getElementById('routeMeta'),
     busListTitle: document.getElementById('busListTitle'),
     busList: document.getElementById('busList'),
-    mapInfo: document.getElementById('mapInfo')
+    mapInfo: document.getElementById('mapInfo'),
+    statusBar: document.getElementById('statusBar')
   };
 
   // ---------- Init ----------
@@ -119,6 +125,7 @@
     const latlngs = route.stops.filter(s => s.lat && s.lng).map(s => [s.lat, s.lng]);
     if (latlngs.length > 1) {
       const pl = L.polyline(latlngs, { color: route.color, weight: 4, opacity: 0.8 });
+      pl.options.routeId = route.id;
       pl.addTo(state.layerGroup);
       state.polylines.push(pl);
     }
@@ -134,6 +141,7 @@
           iconSize: [18, 18], iconAnchor: [9, 9]
         })
       });
+      m.options.routeId = route.id;
       m.addTo(state.layerGroup);
       state.stopMarkers.push(m);
     }
@@ -149,11 +157,12 @@
           iconSize: [18, 18], iconAnchor: [9, 9]
         })
       });
+      m.options.routeId = route.id;
       m.addTo(state.layerGroup);
       state.stopMarkers.push(m);
     }
 
-    // All intermediate stops
+    // Intermediate stop markers
     route.stops.forEach((stop, i) => {
       if (i === 0 || i === route.stops.length - 1) return;
       if (!stop.lat || !stop.lng) return;
@@ -161,6 +170,7 @@
         radius: 3.5, color: route.color, fillColor: '#fff', fillOpacity: 0.85, weight: 2
       });
       m.bindTooltip(`${stop.seq}. ${stop.name}`, { direction: 'top', offset: [0, -5] });
+      m.options.routeId = route.id;
       m.addTo(state.layerGroup);
       state.stopMarkers.push(m);
     });
@@ -266,10 +276,6 @@
 
   // ---------- Data ----------
   async function loadData() {
-    if (!state.data || !state.data.routes) {
-      // Initial load
-    }
-
     const routeIds = CITY_ROUTE_IDS[state.city] || CITY_ROUTE_IDS.hcmc;
     const routes = [];
 
@@ -278,45 +284,48 @@
         // Fetch route details
         const routeRes = await fetch(`${BUSMAP_BASE}/route/detail?routeId=${routeId}`, {
           headers: { Accept: 'application/json' },
-          timeout: 8000
+          signal: AbortSignal.timeout(10000)
         });
         if (!routeRes.ok) continue;
         const routeData = await routeRes.json();
 
-        // Fetch bus positions for direction 0
+        // Fetch bus positions
         const busesRes = await fetch(`${BUSMAP_BASE}/bus/list?routeId=${routeId}&direction=0`, {
           headers: { Accept: 'application/json' },
-          timeout: 8000
+          signal: AbortSignal.timeout(10000)
         });
         const busesRaw = busesRes.ok ? await busesRes.json() : [];
 
-        routes.push({
+        // Map to our format
+        const routeObj = {
           id: `busmap-${routeId}`,
           number: routeData.routeNo || String(routeId),
           name: routeData.name || `Tuyến ${routeId}`,
           startStation: routeData.firstStation || '',
           endStation: routeData.lastStation || '',
           color: routeData.color || '#1976d2',
-          stops: (routeData.stops || []).map((s, i) => ({
-            name: s.name || `Điểm ${i + 1}`,
-            lat: s.lat || 0,
-            lng: s.lng || 0,
-            seq: i + 1
-          })),
-          buses: (buses || []).map((b) => ({
+          stops: geoPointsToStops(routeData.shapes || routeData.geoPoints || routeData.stops || []),
+          buses: []
+        };
+
+        // Add bus positions
+        (busesRaw || []).forEach((b) => {
+          routeObj.buses.push({
             id: b.busId || b.vehicleNumber || `bus-${b.id}`,
-            routeId: routeId,
-            lat: b.lat || 0,
-            lng: b.lng || 0,
-            heading: b.deg || 0,
-            nextStop: b.info || '',
+            routeId: String(routeId),
+            lat: b.lat || b.latitude || 0,
+            lng: b.lng || b.longitude || 0,
+            heading: b.deg || b.heading || 0,
+            nextStop: b.nextStop || '',
             eta: b.status || '',
             updatedAt: b.time ? new Date(b.time * 1000).toISOString() : new Date().toISOString(),
             vehicleNumber: b.vehicleNumber || '',
             speed: b.speed || 0,
             realTime: true
-          }))
+          });
         });
+
+        routes.push(routeObj);
       } catch (e) {
         console.warn(`Route ${routeId} failed:`, e.message);
         continue;
@@ -349,7 +358,7 @@
 
   function loadCity(city) {
     state.city = city;
-    const cfg = CITY_CONFIG[city];
+    const cfg = CONFIG.CITIES[city];
     els.cityTitle.textContent = cfg.name;
     els.citySubtitle.textContent = 'Dữ liệu trực tiếp từ BusMap API';
     els.cityHCMC.classList.toggle('active', city === 'hcmc');
@@ -422,13 +431,28 @@
         <div class="bus-next">Điểm tiếp theo: ${bus.nextStop}</div>
         <div style="display:flex;align-items:center;gap:6px;">
           <span class="bus-eta">⏱ ${bus.eta}</span>
-          <span class="bus-type-badge ${bus.simulated ? 'simulated' : 'real-time'}">${bus.simulated ? 'Mô phỏng' : 'Thực tế'}</span>
+          <span class="bus-type-badge ${bus.simulated ? 'simulated' : 'realtime'}">${bus.simulated ? 'Mô phỏng' : 'Thực tế'}</span>
         </div>
       `;
       els.busList.appendChild(div);
     });
   }
 
-  // ---------- Boot ----------
+  window.toggleRoute = function(routeId, headerEl) {
+    // Single route view - no toggle needed
+  };
+
+  function startAutoRefresh() {
+    state.refreshTimer = setInterval(() => {
+      loadData().catch(() => {});
+    }, CONFIG.REFRESH_INTERVAL);
+  }
+
+  function stopAutoRefresh() {
+    if (state.refreshTimer) clearInterval(state.refreshTimer);
+  }
+
+  window.renderList = renderList;
+
   document.addEventListener('DOMContentLoaded', init);
 })();
