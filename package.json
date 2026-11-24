@@ -1,12 +1,13 @@
 {
   "name": "bus-tracker-vn",
   "version": "1.0.0",
-  "description": "Vietnam bus tracker - GitHub Pages frontend + Cloudflare Worker backend",
-  "private": true,
+  "description": "Vietnam Bus Tracker - HCMC & Hanoi",
+  "main": "index.js",
   "scripts": {
-    "deploy:worker": "wrangler deploy"
+    "build": "echo 'No build step required'"
   },
   "devDependencies": {
-    "wrangler": "^3.0.0"
+    "@capacitor/android": "^6.0.0",
+    "@capacitor/core": "^6.0.0"
   }
 }

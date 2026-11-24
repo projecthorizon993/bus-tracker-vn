@@ -18,17 +18,12 @@
 
 // ---- Config ----
 const FREEROUTE_API_KEY = 'fro_80bfff714e74d8e8e56588a544113339e40f657011771cb54d4fe32c99010d11';
-const BUSMAPS_API_KEY = 'BUSMAPS_API_KEY_PLACEHOLDER'; // Set your key here
-
-const BUSMAPS_BASE = 'https://capi.busmaps.com:8443';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Accept'
+  'Access-Control-Allow-Headers': 'Content-Type, Accept, Authorization'
 };
-
-const MAX_ROUTES_PER_CITY = 15;
 
 // ---- Helpers ----
 function json(data, status = 200, extra = {}) {
@@ -38,12 +33,9 @@ function json(data, status = 200, extra = {}) {
   });
 }
 
-/** Fetch from BusMaps API with API key headers */
-async function busmapsFetch(path, params = {}) {
-  const busMapsKey = BUSMAPS_API_KEY || '';
-  if (!busMapsKey || busMapsKey === 'BUSMAPS_API_KEY_PLACEHOLDER') {
-    return null;
-  }
+/** Fetch from BusMaps API with API key */
+async function busmapsFetch(path, params = {}, apiKey) {
+  if (!apiKey) return null;
 
   const url = new URL(`${BUSMAPS_BASE}${path}`);
   Object.entries(params).forEach(([k, v]) => {
@@ -52,16 +44,20 @@ async function busmapsFetch(path, params = {}) {
     }
   });
 
-  const res = await fetch(url.toString(), {
-    headers: {
-      'Accept': 'application/json',
-      'capi-key': `Bearer ${busMapsKey}`,
-      'capi-host': 'busmaps.com'
-    }
-  });
+  try {
+    const res = await fetch(url.toString(), {
+      headers: {
+        'Accept': 'application/json',
+        'capi-key': `Bearer ${apiKey}`,
+        'capi-host': 'busmaps.com'
+      }
+    });
 
-  if (!res.ok) return null;
-  return res.json();
+    if (!res.ok) return null;
+    return res.json();
+  } catch (e) {
+    return null;
+  }
 }
 
 /** Convert BusMaps raw vehicle positions to bus objects */
@@ -104,7 +100,190 @@ function createSimulatedBuses(stops, routeId, routeNumber, busCount = 4) {
   return buses;
 }
 
-// Mock route data for HCMC and Hanoi (fallback when no API key)
+// ---- Worker ----
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+
+    // CORS preflight
+    if (request.method === 'OPTIONS') {
+      return new Response(null, { status: 204, headers: CORS_HEADERS });
+    }
+
+    if (request.method !== 'GET') {
+      return json({ error: 'Method not allowed' }, 405);
+    }
+
+    const path = url.pathname;
+
+    // ---- Health ----
+    if (path === '/api/health' || path === '/api/health/') {
+      return json({ status: 'ok', service: 'bus-tracker-vn-worker', time: new Date().toISOString() });
+    }
+
+    // ---- Bus data: /api/buses?city=hcmc|hanoi&apiKey=YOUR_KEY ----
+    if (path === '/api/buses' || path === '/api/buses/') {
+      const city = (url.searchParams.get('city') || 'hcmc').toLowerCase();
+      const apiKey = url.searchParams.get('apiKey') || env.BUSMAPS_API_KEY;
+
+      if (!apiKey) {
+        // No API key - return mock data
+        const mockRoutes = MOCK_ROUTES[city] || MOCK_ROUTES.hcmc;
+        const routes = mockRoutes.map(route => ({
+          ...route,
+          buses: createSimulatedBuses(route.stops, route.id, route.number, 4)
+        }));
+        return json({
+          city, cityName: city === 'hcmc' ? 'Ho Chi Minh City' : 'Hanoi',
+          updatedAt: new Date().toISOString(), routes, source: 'mock'
+        });
+      }
+
+      // Try real-time vehicle positions from BusMaps API
+      const cityBounds = {
+        hcmc: { minLat: 10.6, minLng: 106.5, maxLat: 10.9, maxLng: 106.9 },
+        hanoi: { minLat: 20.9, minLng: 105.7, maxLat: 21.1, maxLng: 105.9 }
+      };
+
+      const bounds = cityBounds[city];
+      if (!bounds) {
+        return json({ error: 'Unknown city' }, 400);
+      }
+
+      const vehicleData = await busmapsFetch('/v1/rawVehiclePositions', {
+        minLat: bounds.minLat,
+        minLng: bounds.minLng,
+        maxLat: bounds.maxLat,
+        maxLng: bounds.maxLng
+      }, apiKey);
+
+      const routes = [];
+
+      if (vehicleData && vehicleData.vehicles) {
+        // Group vehicles by route ID
+        const routeBuses = {};
+        for (const v of vehicleData.vehicles) {
+          const rid = v.route_id || 'unknown';
+          if (!routeBuses[rid]) routeBuses[rid] = [];
+          routeBuses[rid].push({
+            id: v.vehicle_id || `bus-${Math.random()}`,
+            routeId: rid,
+            lat: v.lat || v.latitude || 0,
+            lng: v.lng || v.longitude || 0,
+            heading: v.heading || 0,
+            nextStop: v.next_stop || '',
+            eta: v.eta || '',
+            updatedAt: v.timestamp || new Date().toISOString(),
+            vehicleNumber: v.vehicle_number || v.license_plate || '',
+            speed: v.speed || 0,
+            realTime: true
+          });
+        }
+
+        // Create route entries from vehicles found
+        for (const [routeId, buses] of Object.entries(routeBuses)) {
+          routes.push({
+            id: `busmap-${routeId}`, number: routeId,
+            name: `Tuyến ${routeId}`,
+            startStation: buses[0]?.nextStop || '',
+            endStation: '',
+            color: '#1976d2',
+            stops: [],
+            buses,
+            busCount: buses.length
+          });
+        }
+      }
+
+      // If no real data, use mock data
+      if (routes.length === 0) {
+        const mockRoutes = MOCK_ROUTES[city] || MOCK_ROUTES.hcmc;
+        for (const route of mockRoutes) {
+          const buses = createSimulatedBuses(route.stops, route.id, route.number, 4);
+          routes.push({ ...route, buses });
+        }
+      }
+
+      return json({
+        city, cityName: city === 'hcmc' ? 'Ho Chi Minh City' : 'Hanoi',
+        updatedAt: new Date().toISOString(),
+        routes,
+        source: routes.some(r => r.buses.some(b => b.realTime)) ? 'live' : 'mock'
+      });
+    }
+
+    // ---- Route detail: /api/route/:id ----
+    if (path.startsWith('/api/route/')) {
+      const id = path.split('/').pop();
+      const apiKey = url.searchParams.get('apiKey') || env.BUSMAPS_API_KEY;
+
+      if (apiKey) {
+        const lineData = await busmapsFetch('/v1/line', { route_id: id }, apiKey);
+        if (lineData && lineData.route) {
+          return json({
+            id: lineData.route.route_id || id,
+            number: lineData.route.route_id || id,
+            name: lineData.route.route_name || `Tuyến ${id}`,
+            startStation: lineData.route.start_stop_name || '',
+            endStation: lineData.route.end_stop_name || '',
+            color: '#1976d2',
+            stops: lineData.route.stops || [],
+            buses: [],
+            updatedAt: new Date().toISOString(), source: 'live'
+          });
+        }
+      }
+
+      // Fallback: mock data
+      return json({
+        id: `route-${id}`, number: id, name: `Tuyến ${id}`,
+        startStation: '', endStation: '', color: '#1976d2',
+        stops: [], buses: [], busCount: 4,
+        routes: { go: [], back: [] },
+        updatedAt: new Date().toISOString(), source: 'mock'
+      });
+    }
+
+    // ---- Map tile proxy: /api/map-tiles/:z/:x/:y ----
+    if (path.startsWith('/api/map-tiles/')) {
+      const parts = path.split('/');
+      const z = parts[3];
+      const x = parts[4];
+      const y = parts[5].replace('.png', '');
+
+      const tileUrls = [
+        `https://tiles.freeroute.org/${z}/${x}/${y}.png?key=${FREEROUTE_API_KEY}`,
+        `https://tile.openstreetmap.org/${z}/${x}/${y}.png`
+      ];
+
+      for (const tileUrl of tileUrls) {
+        try {
+          const tileRes = await fetch(tileUrl, {
+            headers: { 'User-Agent': 'BusTrackerVN/1.0' }
+          });
+          if (tileRes.ok) {
+            return new Response(tileRes.body, {
+              status: 200,
+              headers: {
+                'Content-Type': tileRes.headers.get('content-type') || 'image/png',
+                'Cache-Control': 'public, max-age=86400',
+                'Access-Control-Allow-Origin': '*'
+              }
+            });
+          }
+        } catch (e) {
+          continue;
+        }
+      }
+
+      return json({ error: 'Tile unavailable' }, 502);
+    }
+
+    return json({ error: 'Not found' }, 404);
+  }
+};
+
+// Mock data for fallback
 const MOCK_ROUTES = {
   hcmc: [
     {
@@ -200,186 +379,4 @@ const MOCK_ROUTES = {
       ]
     }
   ]
-};
-
-// ---- Worker ----
-export default {
-  async fetch(request, env, ctx) {
-    const url = new URL(request.url);
-
-    // CORS preflight
-    if (request.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: CORS_HEADERS });
-    }
-
-    if (request.method !== 'GET') {
-      return json({ error: 'Method not allowed' }, 405);
-    }
-
-    const path = url.pathname;
-
-    // ---- Health ----
-    if (path === '/api/health' || path === '/api/health/') {
-      return json({ status: 'ok', service: 'bus-tracker-vn-worker', time: new Date().toISOString() });
-    }
-
-    // ---- Bus data: /api/buses?city=hcmc|hanoi ----
-    if (path === '/api/buses' || path === '/api/buses/') {
-      const city = (url.searchParams.get('city') || 'hcmc').toLowerCase();
-
-      const routes = [];
-
-      // Try real-time vehicle positions from BusMaps API
-      const busMapsKey = BUSMAPS_API_KEY || '';
-      const hasApiKey = busMapsKey && busMapsKey !== 'BUSMAPS_API_KEY_PLACEHOLDER';
-
-      if (hasApiKey) {
-        // City bounding boxes for vehicle position queries
-        const cityBounds = {
-          hcmc: { minLat: 10.6, minLng: 106.5, maxLat: 10.9, maxLng: 106.9 },
-          hanoi: { minLat: 20.9, minLng: 105.7, maxLat: 21.1, maxLng: 105.9 }
-        };
-
-        const bounds = cityBounds[city];
-        if (bounds) {
-          const vehicleData = await busmapsFetch('/v1/rawVehiclePositions', {
-            minLat: bounds.minLat,
-            minLng: bounds.minLng,
-            maxLat: bounds.maxLat,
-            maxLng: bounds.maxLng
-          });
-
-          if (vehicleData && vehicleData.vehicles) {
-            // Group vehicles by route ID
-            const routeBuses = {};
-            for (const v of vehicleData.vehicles) {
-              const rid = v.route_id || 'unknown';
-              if (!routeBuses[rid]) routeBuses[rid] = [];
-              routeBuses[rid].push({
-                id: v.vehicle_id || `bus-${Math.random()}`,
-                routeId: rid,
-                lat: v.lat || v.latitude || 0,
-                lng: v.lng || v.longitude || 0,
-                heading: v.heading || 0,
-                nextStop: v.next_stop || '',
-                eta: v.eta || '',
-                updatedAt: v.timestamp || new Date().toISOString(),
-                vehicleNumber: v.vehicle_number || v.license_plate || '',
-                speed: v.speed || 0,
-                realTime: true
-              });
-            }
-
-            // Create route entries from vehicles found
-            for (const [routeId, buses] of Object.entries(routeBuses)) {
-              routes.push({
-                id: `busmap-${routeId}`, number: routeId,
-                name: `Tuyến ${routeId}`,
-                startStation: buses[0]?.nextStop || '',
-                endStation: '',
-                color: '#1976d2',
-                stops: [],
-                buses,
-                busCount: buses.length
-              });
-            }
-          }
-        }
-      }
-
-      // If no real data or no API key, use mock data
-      if (routes.length === 0) {
-        const mockRoutes = MOCK_ROUTES[city] || MOCK_ROUTES.hcmc;
-        for (const route of mockRoutes) {
-          const buses = createSimulatedBuses(route.stops, route.id, route.number, 4);
-          routes.push({
-            ...route,
-            buses,
-            busCount: buses.length
-          });
-        }
-      }
-
-      return json({
-        city,
-        cityName: city === 'hcmc' ? 'Ho Chi Minh City' : 'Hanoi',
-        updatedAt: new Date().toISOString(),
-        routes,
-        source: hasApiKey && routes.some(r => r.buses.some(b => b.realTime)) ? 'live' : 'mock'
-      });
-    }
-
-    // ---- Route detail: /api/route/:id ----
-    if (path.startsWith('/api/route/')) {
-      const id = path.split('/').pop();
-
-      // Try BusMaps API for route detail
-      const busMapsKey = BUSMAPS_API_KEY || '';
-      if (busMapsKey && busMapsKey !== 'BUSMAPS_API_KEY_PLACEHOLDER') {
-        // Try line endpoint
-        const lineData = await busmapsFetch('/v1/line', {
-          route_id: id
-        });
-        if (lineData && lineData.route) {
-          return json({
-            id: lineData.route.route_id || id,
-            number: lineData.route.route_id || id,
-            name: lineData.route.route_name || `Tuyến ${id}`,
-            startStation: lineData.route.start_stop_name || '',
-            endStation: lineData.route.end_stop_name || '',
-            color: '#1976d2',
-            stops: lineData.route.stops || [],
-            buses: [],
-            updatedAt: new Date().toISOString(), source: 'live'
-          });
-        }
-      }
-
-      // Fallback: mock data
-      return json({
-        id: `route-${id}`, number: id, name: `Tuyến ${id}`,
-        startStation: '', endStation: '', color: '#1976d2',
-        stops: [], buses: [], busCount: 4,
-        routes: { go: [], back: [] },
-        updatedAt: new Date().toISOString(), source: 'mock'
-      });
-    }
-
-    // ---- Map tile proxy: /api/map-tiles/:z/:x/:y ----
-    if (path.startsWith('/api/map-tiles/')) {
-      const parts = path.split('/');
-      const z = parts[3];
-      const x = parts[4];
-      const y = parts[5].replace('.png', '');
-
-      const tileUrls = [
-        `https://tiles.freeroute.org/${z}/${x}/${y}.png?key=${FREEROUTE_API_KEY}`,
-        `https://tile.openstreetmap.org/${z}/${x}/${y}.png`
-      ];
-
-      for (const tileUrl of tileUrls) {
-        try {
-          const tileRes = await fetch(tileUrl, {
-            headers: { 'User-Agent': 'BusTrackerVN/1.0' }
-          });
-          if (tileRes.ok) {
-            return new Response(tileRes.body, {
-              status: 200,
-              headers: {
-                'Content-Type': tileRes.headers.get('content-type') || 'image/png',
-                'Cache-Control': 'public, max-age=86400',
-                'Access-Control-Allow-Origin': '*'
-              }
-            });
-          }
-        } catch (e) {
-          continue;
-        }
-      }
-
-      return json({ error: 'Tile unavailable' }, 502);
-    }
-
-    return json({ error: 'Not found' }, 404);
-  }
 };

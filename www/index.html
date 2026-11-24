@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Bus Tracker VN — HCMC &amp; Hanoi</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- Sidebar toggle (mobile) -->
+  <button class="sidebar-toggle" id="sidebarToggle" aria-label="Open menu">☰</button>
+
+  <!-- Map -->
+  <div id="map"></div>
+
+  <div class="map-info" id="mapInfo">Bus Tracker VN</div>
+
+  <!-- Sidebar -->
+  <div class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <h2 id="cityTitle">Ho Chi Minh City</h2>
+      <div class="city-name" id="citySubtitle">Dữ liệu trực tiếp từ BusMap API</div>
+    </div>
+    <div class="sidebar-content">
+      <div class="city-toggle">
+        <button id="cityHCMC" class="active">HCMC</button>
+        <button id="cityHanoi">Hà Nội</button>
+      </div>
+
+      <div class="route-selector">
+        <select id="routeSelect"></select>
+      </div>
+
+      <div class="refresh-bar">
+        <button id="btnRefresh">🔄 Làm mới</button>
+        <span id="lastUpdated" style="font-size:11px;color:#888;flex:1;text-align:right;">--</span>
+        <span id="dataSource" style="font-size:11px;color:#4caf50;flex:1;text-align:right;">🔴 Offline</span>
+      </div>
+
+      <div class="scrollable-content">
+        <div class="route-info" id="routeInfo" style="display:none;">
+          <div class="route-header-panel">
+            <div class="route-title" id="routeTitle"></div>
+            <div class="route-stations" id="routeStations"></div>
+            <div class="route-meta" id="routeMeta"></div>
+          </div>
+          <div class="bus-list-title" id="busListTitle">Xe buýt</div>
+          <div class="bus-list" id="busList"></div>
+        </div>
+        <div class="empty-state" id="emptyState">Chọn tuyến xe từ danh sách trên</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scripts -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

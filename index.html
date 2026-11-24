@@ -3,31 +3,58 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Bus Tracker VN — FreeRoute Widget</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body, html { height: 100%; width: 100%; overflow: hidden; font-family: system-ui, sans-serif; }
-    #map-frame {
-      position: absolute;
-      top: 0;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      width: 100%;
-      height: 100%;
-      border: none;
-    }
-  </style>
+  <title>Bus Tracker VN — BusMap API</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <iframe
-    id="map-frame"
-    src="https://busmaps.com/en/maps"
-    width="100%"
-    height="100%"
-    style="border:none;"
-    allowfullscreen
-    loading="lazy"
-  ></iframe>
+
+  <!-- Sidebar toggle -->
+  <button class="sidebar-toggle" id="sidebarToggle">☰</button>
+
+  <!-- Map -->
+  <div id="map"></div>
+
+  <!-- Sidebar -->
+  <div class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <h2 id="cityTitle">Ho Chi Minh City</h2>
+      <div class="city-name" id="citySubtitle">Dữ liệu trực tiếp từ BusMap API</div>
+    </div>
+    <div class="sidebar-content">
+      <div class="city-toggle">
+        <button id="cityHCMC" class="active">HCMC</button>
+        <button id="cityHanoi">Hà Nội</button>
+      </div>
+
+      <div class="search-box">
+        <input type="text" id="routeSearch" placeholder="Tìm tuyến xe..." />
+      </div>
+
+      <div class="refresh-bar">
+        <button id="btnRefresh">🔄 Làm mới</button>
+        <span id="lastUpdated" style="font-size:11px;color:#888;flex:1;text-align:right;">--</span>
+        <span id="dataSource" style="font-size:11px;color:#e91e63;flex:1;text-align:right;">⚠️ Thử kết nối API</span>
+      </div>
+
+      <div class="scrollable-content">
+        <div class="route-info" id="routeInfo" style="display:none;">
+          <div class="route-header-panel">
+            <div class="route-title" id="routeTitle"></div>
+            <div class="route-stations" id="routeStations"></div>
+            <div class="route-meta" id="routeMeta"></div>
+          </div>
+          <div class="bus-list-title" id="busListTitle">Xe buýt</div>
+          <div class="bus-list" id="busList"></div>
+        </div>
+        <div class="empty-state" id="emptyState">Chọn tuyến xe từ danh sách trên</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scripts -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="config.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>

@@ -1,0 +1,18 @@
+{
+  "appId": "com.bustracker.vn",
+  "appName": "Bus Tracker VN",
+  "webDir": "www",
+  "bundledWebRuntime": false,
+  "server": {
+    "url": "https://projecthorizon993.github.io/bus-tracker-vn/",
+    "cleartext": true
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 0
+    },
+    "Keyboard": {
+      "resize": "body"
+    }
+  }
+}
